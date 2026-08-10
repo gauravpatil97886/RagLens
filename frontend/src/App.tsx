@@ -19,16 +19,27 @@ import type {
   StreamEvent,
   Turn,
   UploadTask,
+  View,
 } from './types';
 import CacheDrawer from './components/CacheDrawer';
 import ChatPanel from './components/ChatPanel';
 import ChunkViewer from './components/ChunkViewer';
 import CorpusRail from './components/CorpusRail';
+import Dashboard from './components/Dashboard';
 import Header from './components/Header';
+import PipelineView from './components/PipelineView';
 import Toasts, { type Toast } from './components/Toasts';
 import { screenFile } from './components/UploadZone';
 
 type Inspector = { kind: 'chunks'; documentId: number } | { kind: 'cache' } | null;
+
+const VIEWS: View[] = ['ask', 'signals', 'pipeline'];
+
+/** The view lives in the URL hash so a reload — and a shared link — lands back here. */
+function viewFromHash(): View {
+  const candidate = window.location.hash.replace(/^#\/?/, '') as View;
+  return VIEWS.includes(candidate) ? candidate : 'ask';
+}
 
 let counter = 0;
 const uid = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${(counter += 1)}`;
@@ -56,6 +67,21 @@ export default function App() {
   const [inspector, setInspector] = useState<Inspector>(null);
   const [railOpen, setRailOpen] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [view, setView] = useState<View>(viewFromHash);
+
+  // Back/forward should move between views, so the hash is the source of truth
+  // and setView only writes to it.
+  useEffect(() => {
+    const onHash = () => setView(viewFromHash());
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+
+  const changeView = useCallback((next: View) => {
+    window.location.hash = next === 'ask' ? '' : `/${next}`;
+    setView(next);
+    setRailOpen(false);
+  }, []);
 
   const pushToast = useCallback((message: string, tone: Toast['tone'] = 'error') => {
     const toast: Toast = { id: uid('toast'), message, tone };
@@ -118,14 +144,19 @@ export default function App() {
   // explicitly unticked stays unticked.
   useEffect(() => {
     const readyIds = documents.filter((d) => d.status === 'ready').map((d) => d.id);
+    // Snapshot the ref *before* the updater closes over it. React invokes state
+    // updaters twice under StrictMode, and an updater that read `knownReady.current`
+    // directly would see the new value on its second run and drop every selection —
+    // which left the composer permanently disabled on first load.
+    const previouslyKnown = knownReady.current;
+    knownReady.current = new Set(readyIds);
     setSelected((prev) => {
       const next = new Set<number>();
       for (const id of readyIds) {
-        if (!knownReady.current.has(id) || prev.has(id)) next.add(id);
+        if (!previouslyKnown.has(id) || prev.has(id)) next.add(id);
       }
       return next;
     });
-    knownReady.current = new Set(readyIds);
   }, [documents]);
 
   const readyDocs = documents.filter((d) => d.status === 'ready');
@@ -481,10 +512,23 @@ export default function App() {
         stats={stats}
         health={health}
         unreachable={unreachable}
+        view={view}
+        onChangeView={changeView}
         onOpenCache={() => setInspector({ kind: 'cache' })}
         onToggleRail={() => setRailOpen((v) => !v)}
       />
 
+      {view === 'signals' && <Dashboard />}
+
+      {view === 'pipeline' && (
+        <PipelineView documents={documents} onOpenDocument={openDocument} />
+      )}
+
+      {/* Unmounted rather than hidden: a display:none scroll container loses its
+          position, and coming back to the chat should land on the latest answer.
+          Every piece of chat state — turns, uploads, the in-flight stream — lives
+          up here in App, so nothing is lost. */}
+      {view === 'ask' && (
       <div className="relative flex min-h-0 flex-1">
         {/* Backdrop for the rail, below the lg breakpoint only. */}
         {railOpen && (
@@ -535,6 +579,7 @@ export default function App() {
           onOpenDocument={openDocument}
         />
       </div>
+      )}
 
       <AnimatePresence>
         {inspector?.kind === 'cache' && (

@@ -1,5 +1,6 @@
 import { Database, PanelLeft } from 'lucide-react';
-import type { Health, Stats } from '../types';
+import type { Health, Stats, View } from '../types';
+import NavTabs from './NavTabs';
 import StatsStrip from './StatsStrip';
 
 function HealthDot({ health, unreachable }: { health: Health | null; unreachable: boolean }) {
@@ -27,25 +28,31 @@ export default function Header({
   stats,
   health,
   unreachable,
+  view,
+  onChangeView,
   onOpenCache,
   onToggleRail,
 }: {
   stats: Stats | null;
   health: Health | null;
   unreachable: boolean;
+  view: View;
+  onChangeView: (next: View) => void;
   onOpenCache: () => void;
   onToggleRail: () => void;
 }) {
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b border-line bg-ink-850 px-3 sm:px-4">
-      <button
-        type="button"
-        onClick={onToggleRail}
-        className="rounded p-1.5 text-paper-mute transition-colors hover:text-paper lg:hidden"
-        aria-label="Show the corpus panel"
-      >
-        <PanelLeft size={16} />
-      </button>
+      {view === 'ask' && (
+        <button
+          type="button"
+          onClick={onToggleRail}
+          className="rounded p-1.5 text-paper-mute transition-colors hover:text-paper lg:hidden"
+          aria-label="Show the corpus panel"
+        >
+          <PanelLeft size={16} />
+        </button>
+      )}
 
       {/* The mark is the latency rail in miniature: retrieval, then cache. */}
       <div className="flex min-w-0 items-center gap-2.5">
@@ -53,12 +60,15 @@ export default function Header({
           <span className="h-1.5 w-4 rounded-full bg-signal" />
           <span className="h-1.5 w-2.5 rounded-full bg-cache" />
         </span>
-        <h1 className="truncate font-mono text-2xs uppercase tracking-micro text-paper">
+        <h1 className="hidden truncate font-mono text-2xs uppercase tracking-micro text-paper md:block">
           retrieval, visible
         </h1>
       </div>
 
       <HealthDot health={health} unreachable={unreachable} />
+
+      <span className="mx-1 hidden h-5 w-px bg-line sm:block" aria-hidden="true" />
+      <NavTabs view={view} onChange={onChangeView} />
 
       <div className="ml-auto flex items-center gap-3">
         <StatsStrip stats={stats} />

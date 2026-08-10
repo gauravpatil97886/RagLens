@@ -92,3 +92,44 @@ CREATE TABLE IF NOT EXISTS cache_stats (
 );
 
 INSERT INTO cache_stats (id) VALUES (true) ON CONFLICT (id) DO NOTHING;
+
+-- ---------------------------------------------------------------------------
+-- Telemetry: one row per Gemini request, and one row per request a cache avoided.
+--
+-- `saved = false` is a request that really went to Google (successful or not -- a 429
+-- that burned 900ms and returned nothing is exactly the thing worth seeing). `saved =
+-- true` is a request that did NOT happen because a cache answered first; those rows
+-- carry latency_ms = 0 and no token counts, so any sum over `NOT saved` is real spend
+-- and any count over `saved` is provable savings.
+--
+-- thinking_tokens is deliberately its own column and never folded into output_tokens:
+-- on a thinking model it is routinely an order of magnitude larger than the answer, and
+-- hiding it is how a bill becomes a surprise. It IS billed at the output rate.
+--
+-- tokens_estimated marks counts we derived rather than measured. Embedding responses
+-- carry no usage_metadata at all, so embed rows are estimated at ~4 chars/token.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS api_calls (
+    id               bigserial PRIMARY KEY,
+    created_at       timestamptz NOT NULL DEFAULT now(),
+    -- embed_document | embed_query | generate
+    kind             text        NOT NULL,
+    model            text        NOT NULL,
+    prompt_tokens    integer     NOT NULL DEFAULT 0,
+    output_tokens    integer     NOT NULL DEFAULT 0,
+    thinking_tokens  integer     NOT NULL DEFAULT 0,
+    total_tokens     integer     NOT NULL DEFAULT 0,
+    tokens_estimated boolean     NOT NULL DEFAULT false,
+    latency_ms       integer     NOT NULL DEFAULT 0,
+    -- texts embedded in this batch, or 1 for a generate call
+    n_items          integer     NOT NULL DEFAULT 1,
+    ok               boolean     NOT NULL DEFAULT true,
+    error            text,
+    saved            boolean     NOT NULL DEFAULT false
+);
+
+-- Both indexes serve /api/metrics: the recent-log tail and the per-minute timeseries
+-- read by created_at, every aggregate groups by kind.
+CREATE INDEX IF NOT EXISTS api_calls_created_at_idx ON api_calls (created_at DESC);
+CREATE INDEX IF NOT EXISTS api_calls_kind_idx ON api_calls (kind);

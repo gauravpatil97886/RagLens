@@ -14,15 +14,39 @@ export default function CacheBadge({ cache }: { cache: CacheInfo }) {
   const reduce = useReducedMotion() ?? false;
 
   if (!cache.hit) {
+    // A miss with a near-match is the most instructive thing the cache does: it
+    // shows you the bar, and how far under it the closest question fell.
+    const near = cache.nearest;
+    const shortfall = near ? cache.threshold - near.similarity : 0;
+
     return (
-      <motion.p
+      <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={transition(reduce, 0.2)}
-        className="font-mono text-2xs uppercase tracking-micro text-paper-faint"
+        className="flex max-w-full flex-col gap-1"
       >
-        cache miss · generating fresh
-      </motion.p>
+        <p className="font-mono text-2xs uppercase tracking-micro text-paper-faint">
+          cache miss · generating fresh
+        </p>
+
+        {near && (
+          <p className="font-mono text-2xs tabular-nums text-paper-mute">
+            closest stored question{' '}
+            <span className="text-paper-dim">{formatPct(near.similarity, 1)}</span>
+            {' · needs '}
+            <span className="text-cache-dim">{formatPct(cache.threshold, 0)}</span>
+            {' · short by '}
+            <span className="text-paper-dim">{formatPct(shortfall, 1)}</span>
+          </p>
+        )}
+
+        {near && (
+          <p className="max-w-prose font-serif text-sm italic leading-snug text-paper-faint">
+            “{near.question}”
+          </p>
+        )}
+      </motion.div>
     );
   }
 

@@ -8,6 +8,8 @@ import type {
   DocumentMeta,
   Health,
   IngestEvent,
+  Metrics,
+  Pipeline,
   Stats,
   StreamEvent,
 } from './types';
@@ -66,6 +68,16 @@ export function getHealth(signal?: AbortSignal): Promise<Health> {
 
 export function getStats(signal?: AbortSignal): Promise<Stats> {
   return getJson<Stats>('/stats', { signal });
+}
+
+/** Everything the demo has spent: calls, tokens, latency, cost, and the ledger. */
+export function getMetrics(signal?: AbortSignal): Promise<Metrics> {
+  return getJson<Metrics>('/metrics', { signal });
+}
+
+/** The live wiring — models, chunking, thresholds, index — read back from config and the catalog. */
+export function getPipeline(signal?: AbortSignal): Promise<Pipeline> {
+  return getJson<Pipeline>('/pipeline', { signal });
 }
 
 export function listDocuments(signal?: AbortSignal): Promise<DocumentListResponse> {

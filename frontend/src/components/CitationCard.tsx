@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { ChevronRight } from 'lucide-react';
 import type { Citation } from '../types';
@@ -6,24 +6,34 @@ import SimilarityRing from './SimilarityRing';
 import { rise, transition } from '../lib/motion';
 
 /**
- * One retrieved chunk, as evidence. Collapsed by default — these run to
- * ~1200 characters and five of them expanded would bury the answer — but
- * the full text is always one click away, because "trust me, it was
+ * One retrieved chunk, as evidence. Clamped to three lines by default — these
+ * run to ~1,200 characters and five of them expanded would bury the answer —
+ * but the full text is always one click away, because "trust me, it was
  * relevant" is exactly what this demo exists to disprove.
+ *
+ * Arriving here from an inline citation opens the chunk automatically: the
+ * reader clicked [3] to read source 3, not to be shown its first two lines.
  */
 export default function CitationCard({
   citation,
   anchorId,
   highlighted,
+  expandSignal,
   onOpenDocument,
 }: {
   citation: Citation;
   anchorId: string;
   highlighted: boolean;
+  /** Bumped each time an inline citation points at this card. 0 = never. */
+  expandSignal?: number;
   onOpenDocument: (documentId: number) => void;
 }) {
   const reduce = useReducedMotion() ?? false;
   const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (expandSignal) setOpen(true);
+  }, [expandSignal]);
 
   return (
     <motion.li
@@ -61,30 +71,14 @@ export default function CitationCard({
           </div>
 
           {!open && (
-            <p className="mt-1 line-clamp-2 font-serif text-[13px] leading-relaxed text-paper-dim">
+            <p className="mt-1 line-clamp-3 font-serif text-[13px] leading-relaxed text-paper-dim">
               {citation.content}
             </p>
           )}
         </div>
 
-        <div className="flex shrink-0 items-center gap-2 pl-1">
+        <div className="flex shrink-0 items-center pl-1">
           <SimilarityRing value={citation.similarity} />
-          <button
-            type="button"
-            onClick={() => setOpen((v) => !v)}
-            aria-expanded={open}
-            aria-controls={`${anchorId}-body`}
-            className="rounded p-1 text-paper-mute transition-colors hover:text-paper"
-            title={open ? 'Collapse chunk' : 'Show the full chunk'}
-          >
-            <motion.span
-              className="block"
-              animate={{ rotate: open ? 90 : 0 }}
-              transition={transition(reduce, 0.18)}
-            >
-              <ChevronRight size={15} />
-            </motion.span>
-          </button>
         </div>
       </div>
 
@@ -111,6 +105,25 @@ export default function CitationCard({
           </motion.div>
         )}
       </AnimatePresence>
+
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-controls={`${anchorId}-body`}
+        className="flex w-full items-center gap-1 rounded-b-lg border-t border-line-soft px-3 py-1.5
+                   font-mono text-2xs uppercase tracking-micro text-paper-faint
+                   transition-colors duration-150 hover:bg-ink-800 hover:text-paper-dim"
+      >
+        <motion.span
+          className="block"
+          animate={{ rotate: open ? 90 : 0 }}
+          transition={transition(reduce, 0.18)}
+        >
+          <ChevronRight size={11} />
+        </motion.span>
+        {open ? 'collapse chunk' : 'show full chunk'}
+      </button>
     </motion.li>
   );
 }

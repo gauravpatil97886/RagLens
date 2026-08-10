@@ -58,11 +58,14 @@ export default function StatsStrip({ stats }: { stats: Stats | null }) {
           stats.cache_hits + stats.cache_misses
         } questions`}
       />
+      {/* Deliberately narrower than the dashboard's "prevented" figure: this counts
+          answers reused, one generate call each. The signals tab also counts the
+          embedding calls the caches avoided, so its number is larger and correct too. */}
       <Stat
-        label="calls saved"
+        label="answers reused"
         value={stats.saved_api_calls}
         tone="cache"
-        title="Model calls the cache made unnecessary"
+        title={`${stats.saved_api_calls} answers came back from the query cache — one generate call saved each. See the signals tab for embedding calls saved too.`}
       />
     </div>
   );

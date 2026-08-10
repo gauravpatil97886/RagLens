@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import cache, db, extract, gemini, rag
+from . import cache, db, extract, gemini, metrics, rag
 from .config import settings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -350,3 +350,21 @@ def stats():
         "embed_cache_rows": int(counts["embed_cache_rows"]),
         "threshold": settings.semantic_cache_threshold,
     }
+
+
+# ---------------------------------------------------------------------------
+# Cost + configuration (the teaching endpoints)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/metrics")
+def api_metrics():
+    """Everything api_calls knows: what was spent, what the cache avoided, what it would
+    have cost on the paid tier."""
+    return metrics.snapshot()
+
+
+@app.get("/api/pipeline")
+def api_pipeline():
+    """The live configuration and corpus shape, so the UI never has to hardcode a number."""
+    return metrics.pipeline()

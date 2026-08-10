@@ -55,6 +55,53 @@
   .btn-danger {
     @apply hover:border-alert/60 hover:text-alert;
   }
+
+  /* ── The generated answer ────────────────────────────────────────────────
+     Element styling lives in AnswerText's component map; only the things
+     Tailwind classes can't reach are here. */
+
+  /* A code span inside a block is already in a framed <pre> — drop the chip. */
+  .answer-md pre code {
+    @apply border-0 bg-transparent p-0 text-paper-dim;
+    font-size: inherit;
+  }
+
+  /* Nested lists shouldn't restart the outer rhythm. */
+  .answer-md li > p {
+    @apply my-0;
+  }
+
+  /* The typing caret. It has to follow the last character of the last block,
+     which no React element can do once markdown owns the tree — so it is a
+     pseudo-element on whatever that block turns out to be. Lists hand it down
+     to their final item, and a loose list one step further to that item's
+     final paragraph, so the caret never lands on a line of its own. */
+  .answer-streaming > :last-child:not(ul):not(ol)::after,
+  .answer-streaming > :is(ul, ol):last-child > li:last-child:not(:has(> p))::after,
+  .answer-streaming > :is(ul, ol):last-child > li:last-child > p:last-child::after {
+    content: '';
+    display: inline-block;
+    width: 0.5ch;
+    height: 1.05em;
+    margin-left: 0.14em;
+    transform: translateY(0.17em);
+    background-color: theme('colors.signal.DEFAULT');
+    animation: answer-caret 1.1s steps(1) infinite;
+  }
+}
+
+@keyframes answer-caret {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  50%,
+  95% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
 }
 
 @layer utilities {

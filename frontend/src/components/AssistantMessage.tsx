@@ -1,19 +1,24 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
-import { AlertTriangle, FileSearch } from 'lucide-react';
+import { AlertTriangle } from 'lucide-react';
 import type { AssistantTurn } from '../types';
-import { formatPct } from '../lib/format';
-import { rise, stagger, transition } from '../lib/motion';
+import { rise, transition } from '../lib/motion';
 import AnswerText from './AnswerText';
 import CacheBadge from './CacheBadge';
-import CitationCard from './CitationCard';
+import EvidencePanel from './EvidencePanel';
 import LatencyRail from './LatencyRail';
 
 /**
- * One answer, in the order the pipeline produced it:
- *   cache verdict → retrieved sources → generated text → what it cost.
- * The reading order is the execution order. That's the entire teaching claim
- * of this layout, so nothing is allowed to jump the queue.
+ * One answer.
+ *
+ * The answer is the thing that was asked for, so it comes first and it is the
+ * largest text on screen. Underneath it, in descending order of how often
+ * anyone needs them: the evidence it was built from (one line until you ask),
+ * then what the run cost.
+ *
+ * The pipeline order (cache → retrieve → generate) is still legible — it's the
+ * LatencyRail's whole job — but it no longer dictates the reading order, which
+ * is what put 5,000 characters of raw PDF above the answer.
  */
 export default function AssistantMessage({
   turn,
@@ -23,92 +28,77 @@ export default function AssistantMessage({
   onOpenDocument: (documentId: number) => void;
 }) {
   const reduce = useReducedMotion() ?? false;
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
   const [highlight, setHighlight] = useState<number | null>(null);
-
-  const jumpToCitation = useCallback(
-    (n: number) => {
-      const el = document.getElementById(`cite-${turn.id}-${n}`);
-      if (!el) return;
-      el.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'center' });
-      setHighlight(n);
-      window.setTimeout(() => setHighlight((cur) => (cur === n ? null : cur)), 1600);
-    },
-    [turn.id, reduce],
-  );
+  const [jumpTarget, setJumpTarget] = useState<{ n: number; seq: number } | null>(null);
+  const seqRef = useRef(0);
+  const fadeRef = useRef<number | null>(null);
 
   const citations = turn.citations;
+
+  /** An inline [n] was clicked: open the evidence, scroll to card n, mark it. */
+  const jumpToCitation = useCallback(
+    (n: number) => {
+      if (!citations?.some((c) => c.n === n)) return;
+      seqRef.current += 1;
+      setEvidenceOpen(true);
+      setHighlight(n);
+      setJumpTarget({ n, seq: seqRef.current });
+      if (fadeRef.current) window.clearTimeout(fadeRef.current);
+      fadeRef.current = window.setTimeout(
+        () => setHighlight((cur) => (cur === n ? null : cur)),
+        2000,
+      );
+    },
+    [citations],
+  );
+
+  // The card may not exist yet — the panel is mid-expand — so aim twice: once
+  // on the next frame, once after the disclosure has finished opening.
+  useEffect(() => {
+    if (!jumpTarget) return;
+    const scroll = () => {
+      document
+        .getElementById(`cite-${turn.id}-${jumpTarget.n}`)
+        ?.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'center' });
+    };
+    const frame = requestAnimationFrame(scroll);
+    const settle = window.setTimeout(scroll, 340);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.clearTimeout(settle);
+    };
+  }, [jumpTarget, turn.id, reduce]);
+
+  useEffect(() => () => {
+    if (fadeRef.current) window.clearTimeout(fadeRef.current);
+  }, []);
+
   const waiting = turn.phase === 'embedding' || turn.phase === 'retrieving';
-  const topScore = citations && citations.length > 0 ? Math.max(...citations.map((c) => c.similarity)) : null;
+  const hasAnswer = turn.text.length > 0 || turn.phase === 'generating';
 
   return (
     <motion.div
       initial={{ opacity: 0, y: reduce ? 0 : 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={transition(reduce)}
-      className="flex flex-col gap-3 pr-6"
+      className="flex min-w-0 flex-col gap-3 pr-6"
     >
-      {/* Stage 1 — the cache verdict, before anything is generated. */}
-      {turn.cache && <CacheBadge cache={turn.cache} />}
+      {/* The answer. Everything else on this turn is a footnote to it. */}
+      {hasAnswer && (
+        <motion.div variants={rise(reduce)} initial="hidden" animate="show" className="min-w-0 max-w-[46rem]">
+          <AnswerText text={turn.text} streaming={turn.phase === 'generating'} onCite={jumpToCitation} />
+        </motion.div>
+      )}
 
-      {/* Stage 2 — what retrieval actually found. */}
-      {waiting && !citations && (
+      {/* Before the first token there is nothing to read, so say what's happening. */}
+      {waiting && !hasAnswer && (
         <div className="flex items-center gap-2 font-mono text-2xs uppercase tracking-micro text-paper-mute">
           <span className="animate-breathe">
             {turn.phase === 'embedding' ? 'embedding question' : 'searching chunks'}
           </span>
           <span className="h-px w-8 animate-breathe bg-signal/60" />
         </div>
-      )}
-
-      {citations && (
-        <section aria-label="Retrieved sources">
-          <div className="mb-2 flex flex-wrap items-baseline gap-x-2.5">
-            <span className="inline-flex items-center gap-1.5 font-mono text-2xs uppercase tracking-micro text-signal">
-              <FileSearch size={11} strokeWidth={2.5} />
-              retrieved
-            </span>
-            <span className="font-mono text-2xs tabular-nums text-paper-mute">
-              {citations.length === 0
-                ? 'nothing above the similarity floor'
-                : `${citations.length} chunk${citations.length === 1 ? '' : 's'}`}
-            </span>
-            {topScore !== null && (
-              <span className="font-mono text-2xs tabular-nums text-paper-faint">
-                top {formatPct(topScore)}
-              </span>
-            )}
-          </div>
-
-          {citations.length > 0 && (
-            <motion.ul
-              variants={stagger(reduce)}
-              initial="hidden"
-              animate="show"
-              className="space-y-1.5"
-            >
-              {citations.map((c) => (
-                <CitationCard
-                  key={`${c.chunk_id}-${c.n}`}
-                  citation={c}
-                  anchorId={`cite-${turn.id}-${c.n}`}
-                  highlighted={highlight === c.n}
-                  onOpenDocument={onOpenDocument}
-                />
-              ))}
-            </motion.ul>
-          )}
-        </section>
-      )}
-
-      {/* Stage 3 — the generated answer. */}
-      {(turn.text.length > 0 || turn.phase === 'generating') && (
-        <motion.div variants={rise(reduce)} initial="hidden" animate="show" className="max-w-[46rem]">
-          <AnswerText
-            text={turn.text}
-            streaming={turn.phase === 'generating'}
-            onCite={jumpToCitation}
-          />
-        </motion.div>
       )}
 
       {turn.phase === 'error' && turn.error && (
@@ -121,9 +111,26 @@ export default function AssistantMessage({
         </div>
       )}
 
-      {/* Stage 4 — what it cost. */}
+      {/* The evidence, one line deep. Retrieval lands before the first token,
+          so this appears immediately — folded, so the answer keeps the room. */}
+      {citations && (
+        <div className="min-w-0 max-w-[46rem]">
+          <EvidencePanel
+            citations={citations}
+            turnId={turn.id}
+            open={evidenceOpen}
+            onToggle={setEvidenceOpen}
+            highlight={highlight}
+            jumpTarget={jumpTarget}
+            onOpenDocument={onOpenDocument}
+          />
+        </div>
+      )}
+
+      {/* What the run cost, and where the answer came from. Quiet, and last. */}
       {turn.phase !== 'error' && (
-        <div className="max-w-[46rem]">
+        <div className="max-w-[46rem] border-t border-line-soft pt-2.5">
+          {turn.cache && <CacheBadge cache={turn.cache} />}
           <LatencyRail phase={turn.phase} timings={turn.timings} cacheHit={turn.cache?.hit ?? false} />
         </div>
       )}

@@ -24,9 +24,13 @@ class IngestError(Exception):
     """Ingestion failed; the document row has been marked 'failed' with this message."""
 
 
-SYSTEM_INSTRUCTION = """You are a retrieval-augmented assistant.
+# The formatting half of this prompt is not cosmetic. The frontend renders GitHub
+# markdown, so LaTeX arrives as literal `$$\frac{a}{b}$$`, and a citation the model tucks
+# inside `\text{ [1][3] }` cannot be linked to its chunk. Both are fixed here, at the
+# source, rather than by post-processing the answer with regexes.
+SYSTEM_INSTRUCTION = r"""You are a retrieval-augmented assistant.
 
-Rules, in order of importance:
+Grounding rules, in order of importance:
 1. Answer using ONLY the numbered context blocks given to you. Never use outside
    knowledge, never guess, never fill gaps from memory.
 2. Cite every factual claim with the number of the block it came from, like [1] or
@@ -34,7 +38,22 @@ Rules, in order of importance:
 3. If the context does not contain the answer, say so plainly — for example
    "The documents you've uploaded don't cover that." Do not apologise at length and do
    not offer a general-knowledge answer instead.
-4. Be concise and concrete. Quote the source wording where precision matters."""
+4. Be concise and concrete. Quote the source wording where precision matters.
+
+Formatting rules — your output is rendered as GitHub-flavoured markdown:
+5. NEVER use LaTeX. No `$...$`, no `$$...$$`, no `\frac`, no `\text{...}`, no `\times`,
+   no backslash commands of any kind. Write formulas as plain text or in a backtick code
+   span, for example:
+   `shares = (weighted_salary / total_weighted_salary) * allocable_pool`
+   Use plain characters for maths: * for multiply, / for divide, ^ for powers.
+6. Use only these markdown features: paragraphs, `-` bullet lists, `1.` numbered lists,
+   **bold**, `backtick code`, fenced code blocks, and markdown tables when the source
+   material is genuinely tabular.
+7. Put citations at the END of the sentence or clause they support, after any closing
+   punctuation-free word, like this: The notice period is 60 days [2].
+   Citations must NEVER appear inside a formula, a code span, a fenced code block, a
+   table cell, or a heading. Write them strictly as [1] or [1][2] — never "1.", never a
+   bare number, never [1, 2]."""
 
 NO_CONTEXT_ANSWER = (
     "I couldn't find anything relevant to that in your documents. "
@@ -296,6 +315,10 @@ def prepare(question: str, document_ids: list[int] | None, top_k: int | None) ->
         # Replay the stored citations: the cached answer's [n] markers refer to them.
         prep.citations = found["row"]["citations"] or []
         prep.answer = found["row"]["answer"]
+        # An exact hit skips BOTH remaining API calls — we never even embed the question,
+        # because matching normalised strings needs no vector. Two saved calls, not one.
+        gemini.record_saved(gemini.KIND_EMBED_QUERY, settings.gemini_embed_model)
+        gemini.record_saved(gemini.KIND_GENERATE, settings.gemini_chat_model)
         return prep.finalize()
 
     # --- Stage 2: embed the question (RETRIEVAL_QUERY, not RETRIEVAL_DOCUMENT).
@@ -322,6 +345,9 @@ def prepare(question: str, document_ids: list[int] | None, top_k: int | None) ->
     if hit:
         prep.citations = found["row"]["citations"] or []
         prep.answer = found["row"]["answer"]
+        # Only the generation call is saved here: the embedding above already happened,
+        # and is what made the match findable in the first place.
+        gemini.record_saved(gemini.KIND_GENERATE, settings.gemini_chat_model)
         return prep.finalize()
 
     # --- Stage 3: retrieve the nearest chunks by cosine distance.
