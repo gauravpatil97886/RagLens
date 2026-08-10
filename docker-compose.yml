@@ -1,0 +1,26 @@
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    container_name: rag-demo-db
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      # Host 5433 -> container 5432. Host port is non-default on purpose: this
+      # machine already runs another Postgres on 5432, and we don't want to
+      # collide with it. The container itself still listens on the normal 5432.
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - rag_demo_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  rag_demo_pgdata:

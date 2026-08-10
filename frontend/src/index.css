@@ -1,0 +1,97 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-ink-900 text-paper antialiased;
+    font-feature-settings: 'cv05' 1, 'ss01' 1;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* One focus treatment, everywhere. Marigold hairline, never a browser blue. */
+  :focus-visible {
+    @apply outline-none ring-1 ring-signal/70 ring-offset-1 ring-offset-ink-900;
+    border-radius: 4px;
+  }
+
+  ::selection {
+    background: rgba(240, 169, 59, 0.28);
+  }
+
+  /* Numerals should line up in every measurement in this UI. */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer components {
+  /* Micro-caps: the label voice of the instrument. */
+  .eyebrow {
+    @apply font-mono text-2xs uppercase tracking-micro text-paper-mute;
+  }
+
+  .btn {
+    @apply inline-flex items-center gap-1.5 rounded-md border border-line bg-ink-800 px-2.5 py-1.5
+           font-mono text-2xs uppercase tracking-micro text-paper-dim
+           transition-colors duration-150 hover:border-line-strong hover:text-paper
+           disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-line disabled:hover:text-paper-dim;
+  }
+
+  .btn-accent {
+    @apply border-signal/40 bg-signal/10 text-signal hover:border-signal/70 hover:text-signal;
+  }
+
+  .btn-danger {
+    @apply hover:border-alert/60 hover:text-alert;
+  }
+}
+
+@layer utilities {
+  /* The corpus rail and chunk viewer both scroll a lot. Keep the bars quiet. */
+  .scroll-quiet {
+    scrollbar-width: thin;
+    scrollbar-color: #1e3036 transparent;
+  }
+
+  .scroll-quiet::-webkit-scrollbar {
+    width: 9px;
+    height: 9px;
+  }
+
+  .scroll-quiet::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scroll-quiet::-webkit-scrollbar-thumb {
+    background-color: #1e3036;
+    border: 3px solid transparent;
+    background-clip: content-box;
+    border-radius: 999px;
+  }
+
+  .scroll-quiet:hover::-webkit-scrollbar-thumb {
+    background-color: #2c464f;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

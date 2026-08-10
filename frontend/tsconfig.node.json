@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "skipLibCheck": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    // A composite (referenced) project may not disable emit -- TS6310. Emitting only
+    // the .d.ts keeps `tsc --noEmit` on the root project working without producing JS.
+    "emitDeclarationOnly": true,
+    "declaration": true,
+    "outDir": "./node_modules/.tmp/tsconfig.node"
+  },
+  "include": ["vite.config.ts"]
+}

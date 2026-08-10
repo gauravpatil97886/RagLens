@@ -1,0 +1,21 @@
+[project]
+name = "rag-demo-backend"
+version = "0.1.0"
+description = "Teaching-quality RAG backend: Gemini embeddings + pgvector + a two-layer semantic cache."
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "google-genai==2.17.0",
+    "psycopg[binary,pool]==3.3.*",
+    "pgvector==0.5.*",
+    "numpy>=1.26",
+    "pydantic-settings>=2.4",
+    "python-multipart>=0.0.9",
+    "pypdf>=5.0",
+    "python-docx>=1.1",
+]
+
+# This is an application, not a library — nothing to build/install as a package.
+[tool.uv]
+package = false
