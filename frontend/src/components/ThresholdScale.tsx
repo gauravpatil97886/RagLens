@@ -29,19 +29,19 @@ export default function ThresholdScale({
       <div className="scroll-quiet overflow-x-auto">
         <svg
           viewBox={`0 0 ${W} 84`}
-          className="w-full min-w-[25rem]"
+          className="w-full min-w-[23rem]"
           role="img"
           aria-label={`Cosine similarity scale from 0 to 1. Chunks below ${minSimilarity} are discarded. A cached question at or above ${cacheThreshold} is reused instead of calling the model.`}
         >
           {/* Below the retrieval floor: not evidence. */}
-          <rect x={x(0)} y={AXIS_Y - 7} width={x(minSimilarity) - x(0)} height={14} fill="#152329" />
+          <rect x={x(0)} y={AXIS_Y - 7} width={x(minSimilarity) - x(0)} height={14} className="fill-ink-750" />
           {/* At or above the cache bar: the model is never called. */}
           <rect
             x={x(cacheThreshold)}
             y={AXIS_Y - 7}
             width={x(1) - x(cacheThreshold)}
             height={14}
-            fill="#55D6A8"
+            className="fill-cache"
             opacity={0.18}
           />
           {/* Everything between: a real retrieval candidate. */}
@@ -50,11 +50,11 @@ export default function ThresholdScale({
             y={AXIS_Y - 7}
             width={x(cacheThreshold) - x(minSimilarity)}
             height={14}
-            fill="#F0A93B"
+            className="fill-signal"
             opacity={0.12}
           />
 
-          <line x1={x(0)} y1={AXIS_Y + 7} x2={x(1)} y2={AXIS_Y + 7} stroke="#1E3036" strokeWidth={1} />
+          <line x1={x(0)} y1={AXIS_Y + 7} x2={x(1)} y2={AXIS_Y + 7} className="stroke-line" strokeWidth={1} />
 
           {[0, 0.25, 0.5, 0.75, 1].map((t) => (
             <g key={t}>
@@ -63,7 +63,7 @@ export default function ThresholdScale({
                 y1={AXIS_Y + 7}
                 x2={x(t)}
                 y2={AXIS_Y + 12}
-                stroke="#43575C"
+                className="stroke-paper-faint"
                 strokeWidth={1}
               />
               <text
@@ -71,7 +71,7 @@ export default function ThresholdScale({
                 y={AXIS_Y + 24}
                 fontSize={10}
                 textAnchor="middle"
-                fill="#697E83"
+                className="fill-paper-mute"
                 fontFamily="'JetBrains Mono', ui-monospace, monospace"
               >
                 {t.toFixed(2)}
@@ -85,7 +85,7 @@ export default function ThresholdScale({
             y1={AXIS_Y - 18}
             x2={x(minSimilarity)}
             y2={AXIS_Y + 7}
-            stroke="#F0A93B"
+            className="stroke-signal"
             strokeWidth={2}
           />
           <text
@@ -93,7 +93,7 @@ export default function ThresholdScale({
             y={AXIS_Y - 22}
             fontSize={10}
             textAnchor={floorAnchor}
-            fill="#F0A93B"
+            className="fill-signal"
             fontFamily="'JetBrains Mono', ui-monospace, monospace"
           >
             {minSimilarity} retrieval floor
@@ -105,7 +105,7 @@ export default function ThresholdScale({
             y1={AXIS_Y - 18}
             x2={x(cacheThreshold)}
             y2={AXIS_Y + 7}
-            stroke="#55D6A8"
+            className="stroke-cache"
             strokeWidth={2}
           />
           <text
@@ -113,7 +113,7 @@ export default function ThresholdScale({
             y={AXIS_Y - 22}
             fontSize={10}
             textAnchor="end"
-            fill="#55D6A8"
+            className="fill-cache"
             fontFamily="'JetBrains Mono', ui-monospace, monospace"
           >
             {cacheThreshold} cache bar
@@ -121,7 +121,7 @@ export default function ThresholdScale({
         </svg>
       </div>
 
-      <figcaption className="mt-1 max-w-[46rem] font-serif text-[14px] leading-[1.65] text-paper-dim">
+      <figcaption className="mt-1 max-w-[46rem] text-[14px] leading-[1.65] text-paper-dim">
         Two bars, one unit. A chunk only has to clear{' '}
         <span className="font-mono text-2xs text-signal">{minSimilarity}</span> to be worth
         showing the model, because the model can ignore a weak passage. A previous question has

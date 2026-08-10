@@ -1,5 +1,5 @@
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { RefreshCw, X } from 'lucide-react';
+import { RefreshCw } from 'lucide-react';
 import type { DocumentMeta, UploadTask } from '../types';
 import { transition } from '../lib/motion';
 import DocumentRow from './DocumentRow';
@@ -20,7 +20,6 @@ export default function CorpusRail({
   onOpenDocument,
   onDelete,
   onRetry,
-  onClose,
 }: {
   documents: DocumentMeta[];
   loading: boolean;
@@ -35,7 +34,6 @@ export default function CorpusRail({
   onOpenDocument: (id: number) => void;
   onDelete: (id: number) => void;
   onRetry: () => void;
-  onClose: () => void;
 }) {
   const reduce = useReducedMotion() ?? false;
   const ready = documents.filter((d) => d.status === 'ready');
@@ -43,25 +41,15 @@ export default function CorpusRail({
   const totalChunks = ready.reduce((sum, d) => sum + d.n_chunks, 0);
 
   return (
-    <div className="flex h-full min-h-0 flex-col border-r border-line bg-ink-850">
-      <header className="flex items-center justify-between gap-2 border-b border-line px-4 py-3">
-        <div className="flex items-baseline gap-2">
-          <h2 className="eyebrow text-paper-dim">corpus</h2>
-          <span className="font-mono text-2xs tabular-nums text-paper-faint">
-            {documents.length} · {totalChunks} chunks
-          </span>
-        </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded p-1 text-paper-mute hover:text-paper lg:hidden"
-          aria-label="Close the corpus panel"
-        >
-          <X size={15} />
-        </button>
-      </header>
+    <div className="flex min-h-0 flex-1 flex-col pt-5">
+      <div className="flex items-baseline justify-between gap-2 px-4 pb-2">
+        <h2 className="text-[12px] font-medium uppercase tracking-[0.08em] text-paper-faint">Corpus</h2>
+        <span className="font-mono text-[11.5px] tabular-nums text-paper-faint">
+          {documents.length} · {totalChunks} chunks
+        </span>
+      </div>
 
-      <div className="scroll-quiet min-h-0 flex-1 overflow-y-auto px-3 py-3">
+      <div className="scroll-quiet min-h-0 flex-1 overflow-y-auto px-3 pb-3">
         <UploadZone onFiles={onFiles} busy={uploads.length > 0} />
 
         <AnimatePresence initial={false}>
@@ -85,28 +73,28 @@ export default function CorpusRail({
 
         {documents.length > 0 && (
           <div className="mb-2 mt-5 flex items-center justify-between gap-2">
-            <span className="eyebrow">
-              scope · {selectedIds.size}/{ready.length}
+            <span className="text-[12px] text-paper-faint">
+              In scope <span className="font-mono tabular-nums">{selectedIds.size}/{ready.length}</span>
             </span>
             <button
               type="button"
               onClick={() => onSelectAll(!allSelected)}
               disabled={ready.length === 0}
-              className="font-mono text-2xs uppercase tracking-micro text-paper-mute
-                         transition-colors hover:text-signal disabled:opacity-40"
+              className="rounded-md px-1.5 py-0.5 text-[12px] text-paper-mute
+                         transition-colors duration-150 hover:bg-ink-800 hover:text-signal disabled:opacity-40"
             >
-              {allSelected ? 'none' : 'all'}
+              {allSelected ? 'Clear all' : 'Select all'}
             </button>
           </div>
         )}
 
         {error && (
-          <div className="mt-4 rounded-lg border border-alert/40 bg-alert/[0.06] px-3 py-2.5">
-            <p className="font-mono text-2xs uppercase tracking-micro text-alert">corpus unavailable</p>
-            <p className="mt-1 text-2xs leading-relaxed text-paper-dim">{error}</p>
+          <div className="mt-4 rounded-xl border border-alert/35 bg-alert/[0.06] px-3 py-2.5">
+            <p className="text-[12.5px] font-medium text-alert">The corpus didn't load</p>
+            <p className="mt-1 text-[12px] leading-relaxed text-paper-dim">{error}</p>
             <button type="button" onClick={onRetry} className="btn mt-2">
-              <RefreshCw size={11} />
-              try again
+              <RefreshCw size={12} />
+              Try again
             </button>
           </div>
         )}
@@ -114,7 +102,7 @@ export default function CorpusRail({
         {loading && documents.length === 0 && !error && (
           <ul className="mt-4 space-y-2" aria-hidden="true">
             {[0, 1, 2].map((i) => (
-              <li key={i} className="h-[52px] animate-breathe rounded-lg border border-line bg-ink-800" />
+              <li key={i} className="h-[52px] animate-breathe rounded-xl border border-line bg-ink-800" />
             ))}
           </ul>
         )}
@@ -142,6 +130,16 @@ export default function CorpusRail({
           </AnimatePresence>
         </ul>
       </div>
+
+      {/* The rail's standing claim, at the foot of the panel where the list runs
+          out. It is the whole constraint of the app in one line, and it keeps the
+          lower half of the rail from reading as dead space. */}
+      {ready.length > 0 && (
+        <p className="shrink-0 border-t border-line-soft px-4 pb-3 pt-2.5 text-[11.5px] leading-relaxed text-paper-faint">
+          <span className="font-mono tabular-nums text-paper-mute">{totalChunks}</span> passages
+          searchable. Untick a document and it leaves the search.
+        </p>
+      )}
     </div>
   );
 }

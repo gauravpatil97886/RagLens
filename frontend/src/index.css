@@ -2,9 +2,124 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   Tokens.
+
+   Every colour in this UI resolves through a CSS variable holding an RGB
+   triplet, so Tailwind's opacity modifiers (`bg-signal/10`) keep working while
+   the whole app re-themes from one attribute on <html>.
+
+   Two themes, one identity. Dark is the room the conversation happens in:
+   petrol ink, warm enough to read against for an hour, with a marigold signal
+   and a mint cache. Light is the same room in daylight — the petrol becomes
+   the ink, the accents deepen so they can be read rather than glow. Nothing is
+   a neutral grey in either theme; the petrol hue runs through every surface.
+
+   `rail`     the navigation ground. Sits behind the conversation, never in it.
+   `ink-*`    surfaces, 950 → 700 in order of elevation
+   `paper-*`  text, DEFAULT → faint in order of quietness
+   `signal`   retrieval, focus, emphasis. The one accent.
+   `cache`    reserved exclusively for cache semantics.
+   `alert`    reserved exclusively for failure.
+   `onaccent` text that sits on top of a filled accent.
+   ───────────────────────────────────────────────────────────────────────────*/
+
 @layer base {
-  :root {
+  :root,
+  [data-theme='light'] {
+    color-scheme: light;
+
+    --rail: 240 243 242; /* the sidebar */
+    --ink-950: 255 255 255;
+    --ink-900: 250 251 251; /* the conversation ground */
+    --ink-850: 255 255 255; /* raised: cards, composer, panels */
+    --ink-800: 238 242 242; /* controls, the user bubble */
+    --ink-750: 243 246 246; /* inset: inline code */
+    --ink-700: 229 235 235; /* deepest chrome: hover, chips */
+
+    --line: 217 226 225;
+    --line-soft: 231 237 236;
+    --line-strong: 184 199 198;
+
+    --paper: 13 25 28; /* petrol black */
+    --paper-dim: 56 76 81;
+    --paper-mute: 92 113 118;
+    --paper-faint: 128 148 152;
+
+    /* Deepened so they read as text on paper, and still carry white when filled. */
+    --signal: 166 99 14;
+    --signal-dim: 190 124 27;
+    --signal-deep: 250 238 219;
+
+    --cache: 12 118 84;
+    --cache-dim: 25 145 105;
+    --cache-deep: 223 243 235;
+
+    --alert: 177 38 25;
+    --alert-dim: 198 69 57;
+    --alert-deep: 252 231 228;
+
+    --onaccent: 255 255 255;
+    --scrim: 13 25 28;
+
+    /* Chart series. One marigold ramp, monotone in lightness, so a segment
+       never changes identity. On paper the ramp runs dark→light; lit, it runs
+       bright→deep. Colour never carries identity alone — every series is also
+       named in mono beside its mark. */
+    --chart-1: 122 74 13;
+    --chart-2: 168 101 15;
+    --chart-3: 209 154 60;
+
+    --shadow-panel: 0 18px 44px -22px rgb(13 25 28 / 0.26);
+    --shadow-lift: 0 1px 2px rgb(13 25 28 / 0.05), 0 12px 28px -14px rgb(13 25 28 / 0.16);
+    --shadow-inset: inset 0 1px 0 0 rgb(255 255 255 / 0.9);
+    --selection: rgb(166 99 14 / 0.18);
+  }
+
+  [data-theme='dark'] {
     color-scheme: dark;
+
+    --rail: 10 16 18;
+    --ink-950: 8 13 15;
+    --ink-900: 14 21 24; /* the conversation ground — lifted off black so a
+                            long answer sits on a surface, not in a void */
+    --ink-850: 20 30 34;
+    --ink-800: 27 39 44;
+    --ink-750: 33 47 53;
+    --ink-700: 41 58 65;
+
+    --line: 36 53 60;
+    --line-soft: 27 41 46;
+    --line-strong: 57 81 90;
+
+    --paper: 233 240 238;
+    --paper-dim: 170 187 189;
+    --paper-mute: 122 143 148;
+    --paper-faint: 88 108 114;
+
+    --signal: 242 174 73;
+    --signal-dim: 197 133 44;
+    --signal-deep: 66 49 16;
+
+    --cache: 91 217 172;
+    --cache-dim: 58 165 128;
+    --cache-deep: 16 52 41;
+
+    --alert: 230 110 97;
+    --alert-dim: 172 74 64;
+    --alert-deep: 58 23 21;
+
+    --onaccent: 8 13 15;
+    --scrim: 3 6 7;
+
+    --chart-1: 242 174 73;
+    --chart-2: 197 133 44;
+    --chart-3: 142 94 30;
+
+    --shadow-panel: 0 24px 60px -20px rgb(0 0 0 / 0.7);
+    --shadow-lift: 0 1px 2px rgb(0 0 0 / 0.4), 0 14px 32px -16px rgb(0 0 0 / 0.65);
+    --shadow-inset: inset 0 1px 0 0 rgb(255 255 255 / 0.03);
+    --selection: rgb(242 174 73 / 0.28);
   }
 
   html,
@@ -15,18 +130,29 @@
 
   body {
     @apply bg-ink-900 text-paper antialiased;
-    font-feature-settings: 'cv05' 1, 'ss01' 1;
+    font-feature-settings: 'ss01' 1;
     text-rendering: optimizeLegibility;
   }
 
-  /* One focus treatment, everywhere. Marigold hairline, never a browser blue. */
+  /* Theme changes should feel like a light being switched, not a page reload —
+     but only the surfaces move, so text never smears mid-transition. */
+  .theme-shifting *,
+  .theme-shifting *::before,
+  .theme-shifting *::after {
+    transition:
+      background-color 220ms ease,
+      border-color 220ms ease,
+      color 160ms ease;
+  }
+
+  /* One focus treatment, everywhere. Accent ring, never a browser blue. */
   :focus-visible {
-    @apply outline-none ring-1 ring-signal/70 ring-offset-1 ring-offset-ink-900;
-    border-radius: 4px;
+    @apply outline-none ring-2 ring-signal/55 ring-offset-2 ring-offset-ink-900;
+    border-radius: 8px;
   }
 
   ::selection {
-    background: rgba(240, 169, 59, 0.28);
+    background: var(--selection);
   }
 
   /* Numerals should line up in every measurement in this UI. */
@@ -36,24 +162,40 @@
 }
 
 @layer components {
-  /* Micro-caps: the label voice of the instrument. */
+  /* Micro-caps. The label voice of the two instrument views only — the
+     conversation speaks in sentence case, because that is what you read. */
   .eyebrow {
     @apply font-mono text-2xs uppercase tracking-micro text-paper-mute;
   }
 
+  /* ── Controls ────────────────────────────────────────────────────────────
+     Soft, filled, and generous with their hit area. The old hairline buttons
+     were the thing that made this app read as a terminal. */
+
   .btn {
-    @apply inline-flex items-center gap-1.5 rounded-md border border-line bg-ink-800 px-2.5 py-1.5
-           font-mono text-2xs uppercase tracking-micro text-paper-dim
-           transition-colors duration-150 hover:border-line-strong hover:text-paper
-           disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-line disabled:hover:text-paper-dim;
+    @apply inline-flex items-center gap-1.5 rounded-lg border border-line bg-ink-800 px-2.5 py-1.5
+           text-[12.5px] font-medium text-paper-dim
+           transition-[color,background-color,border-color] duration-150
+           hover:border-line-strong hover:bg-ink-700 hover:text-paper
+           disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-line
+           disabled:hover:bg-ink-800 disabled:hover:text-paper-dim;
   }
 
   .btn-accent {
-    @apply border-signal/40 bg-signal/10 text-signal hover:border-signal/70 hover:text-signal;
+    @apply border-signal/35 bg-signal/10 text-signal hover:border-signal/60 hover:bg-signal/15 hover:text-signal;
   }
 
   .btn-danger {
-    @apply hover:border-alert/60 hover:text-alert;
+    @apply hover:border-alert/60 hover:bg-alert/10 hover:text-alert;
+  }
+
+  /* A quiet, borderless control for message actions and tray toggles. It has
+     to disappear while you're reading and be obvious the moment you look. */
+  .btn-ghost {
+    @apply inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-[12.5px] text-paper-mute
+           transition-[color,background-color] duration-150
+           hover:bg-ink-800 hover:text-paper
+           disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent;
   }
 
   /* ── The generated answer ────────────────────────────────────────────────
@@ -71,21 +213,36 @@
     @apply my-0;
   }
 
+  /* A term the answer is introducing. Struck through with a marigold wash that
+     sits *behind* the baseline like a highlighter, so the word stays the thing
+     you read and the mark stays the thing you notice second. */
+  .term-mark {
+    background-image: linear-gradient(
+      to top,
+      rgb(var(--signal) / 0.22) 0.34em,
+      rgb(var(--signal) / 0.22) 0.34em,
+      transparent 0.34em
+    );
+    border-radius: 1px;
+    padding: 0 0.06em;
+  }
+
   /* The typing caret. It has to follow the last character of the last block,
      which no React element can do once markdown owns the tree — so it is a
      pseudo-element on whatever that block turns out to be. Lists hand it down
      to their final item, and a loose list one step further to that item's
      final paragraph, so the caret never lands on a line of its own. */
-  .answer-streaming > :last-child:not(ul):not(ol)::after,
+  .answer-streaming > :last-child:not(ul):not(ol):not(figure)::after,
   .answer-streaming > :is(ul, ol):last-child > li:last-child:not(:has(> p))::after,
   .answer-streaming > :is(ul, ol):last-child > li:last-child > p:last-child::after {
     content: '';
     display: inline-block;
-    width: 0.5ch;
+    width: 0.42em;
     height: 1.05em;
     margin-left: 0.14em;
     transform: translateY(0.17em);
-    background-color: theme('colors.signal.DEFAULT');
+    border-radius: 2px;
+    background-color: rgb(var(--signal));
     animation: answer-caret 1.1s steps(1) infinite;
   }
 }
@@ -105,15 +262,15 @@
 }
 
 @layer utilities {
-  /* The corpus rail and chunk viewer both scroll a lot. Keep the bars quiet. */
+  /* The sidebar and the chunk viewer both scroll a lot. Keep the bars quiet. */
   .scroll-quiet {
     scrollbar-width: thin;
-    scrollbar-color: #1e3036 transparent;
+    scrollbar-color: rgb(var(--line)) transparent;
   }
 
   .scroll-quiet::-webkit-scrollbar {
-    width: 9px;
-    height: 9px;
+    width: 10px;
+    height: 10px;
   }
 
   .scroll-quiet::-webkit-scrollbar-track {
@@ -121,14 +278,14 @@
   }
 
   .scroll-quiet::-webkit-scrollbar-thumb {
-    background-color: #1e3036;
+    background-color: rgb(var(--line));
     border: 3px solid transparent;
     background-clip: content-box;
     border-radius: 999px;
   }
 
   .scroll-quiet:hover::-webkit-scrollbar-thumb {
-    background-color: #2c464f;
+    background-color: rgb(var(--line-strong));
   }
 }
 

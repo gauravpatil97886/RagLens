@@ -87,10 +87,10 @@ export default function UploadZone({
           <Upload size={17} strokeWidth={1.75} />
         </motion.span>
 
-        <span className="font-mono text-2xs uppercase tracking-micro text-paper-dim">
-          {over ? 'release to ingest' : busy ? 'add another' : 'drop a document'}
+        <span className="text-[13px] font-medium text-paper-dim">
+          {over ? 'Release to ingest' : busy ? 'Add another' : 'Drop a document'}
         </span>
-        <span className="text-2xs text-paper-faint">or click to browse · pdf txt md docx · 20 MB</span>
+        <span className="text-[11.5px] text-paper-faint">or click to browse · pdf txt md docx · 20 MB</span>
       </motion.button>
 
       <input

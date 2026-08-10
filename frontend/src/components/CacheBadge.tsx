@@ -26,12 +26,12 @@ export default function CacheBadge({ cache }: { cache: CacheInfo }) {
         transition={transition(reduce, 0.2)}
         className="flex max-w-full flex-col gap-1"
       >
-        <p className="font-mono text-2xs uppercase tracking-micro text-paper-faint">
-          cache miss · generating fresh
+        <p className="text-[12px] text-paper-mute">
+          No stored answer was close enough, so this one was written fresh.
         </p>
 
         {near && (
-          <p className="font-mono text-2xs tabular-nums text-paper-mute">
+          <p className="font-mono text-2xs tabular-nums text-paper-faint">
             closest stored question{' '}
             <span className="text-paper-dim">{formatPct(near.similarity, 1)}</span>
             {' · needs '}
@@ -42,7 +42,7 @@ export default function CacheBadge({ cache }: { cache: CacheInfo }) {
         )}
 
         {near && (
-          <p className="max-w-prose font-serif text-sm italic leading-snug text-paper-faint">
+          <p className="max-w-prose font-serif text-[13.5px] italic leading-snug text-paper-mute">
             “{near.question}”
           </p>
         )}
@@ -62,17 +62,17 @@ export default function CacheBadge({ cache }: { cache: CacheInfo }) {
       <div className="flex flex-wrap items-center gap-2">
         <span
           className={[
-            'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 font-mono text-2xs uppercase tracking-micro',
+            'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-medium',
             exact
-              ? 'bg-cache text-ink-950'
+              ? 'bg-cache text-onaccent'
               : 'border border-cache/45 bg-cache/10 text-cache',
           ].join(' ')}
         >
           {exact ? <Zap size={11} strokeWidth={2.5} /> : <Radar size={11} strokeWidth={2.5} />}
-          {exact ? 'cache · exact' : `cache · semantic ${formatPct(cache.similarity ?? 0)}`}
+          {exact ? 'Exact cache hit' : `Semantic cache hit · ${formatPct(cache.similarity ?? 0)}`}
         </span>
 
-        <span className="font-mono text-2xs tabular-nums text-paper-mute">
+        <span className="font-mono text-2xs tabular-nums text-paper-faint">
           stored {formatAge(cache.age_seconds)}
         </span>
 
@@ -84,7 +84,7 @@ export default function CacheBadge({ cache }: { cache: CacheInfo }) {
       </div>
 
       {cache.matched_question && (
-        <p className="max-w-prose font-serif text-sm italic leading-snug text-paper-dim">
+        <p className="max-w-prose font-serif text-[13.5px] italic leading-snug text-paper-dim">
           matched <span className="text-paper">“{cache.matched_question}”</span>
         </p>
       )}

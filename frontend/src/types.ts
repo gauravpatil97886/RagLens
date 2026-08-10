@@ -479,6 +479,13 @@ export interface AssistantTurn {
   timings: Timings | null;
   error: string | null;
   startedAt: number;
+  /**
+   * The model that actually wrote this answer, read back from the api_calls
+   * ledger once the run settles. Null on a cache hit (no model was called),
+   * and null whenever the ledger row can't be identified — the footer simply
+   * omits it rather than printing the configured default as if it were fact.
+   */
+  model: string | null;
 }
 
 export type Turn = UserTurn | AssistantTurn;

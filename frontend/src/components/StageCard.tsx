@@ -87,14 +87,14 @@ export default function StageCard({
 /** The explanatory voice: serif, because it is prose, not a measurement. */
 export function Why({ children }: { children: ReactNode }) {
   return (
-    <p className="max-w-[46rem] font-serif text-[14px] leading-[1.65] text-paper-dim">{children}</p>
+    <p className="max-w-[46rem] text-[14px] leading-[1.65] text-paper-dim">{children}</p>
   );
 }
 
 /** Verbatim server prose — set apart so it reads as quoted, not paraphrased. */
 export function Quoted({ children }: { children: ReactNode }) {
   return (
-    <p className="max-w-[46rem] border-l border-line-strong pl-3 font-serif text-[13.5px] leading-[1.7] text-paper-mute">
+    <p className="max-w-[46rem] border-l border-line-strong pl-3 text-[13.5px] leading-[1.7] text-paper-mute">
       {children}
     </p>
   );

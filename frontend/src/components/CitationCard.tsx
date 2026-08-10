@@ -40,15 +40,15 @@ export default function CitationCard({
       id={anchorId}
       variants={rise(reduce, 6)}
       className={[
-        'scroll-mt-24 rounded-lg border bg-ink-850 transition-colors duration-300',
+        'scroll-mt-24 overflow-hidden rounded-xl border bg-ink-850 transition-colors duration-300',
         highlighted ? 'border-signal/70 bg-signal/[0.06]' : 'border-line hover:border-line-strong',
       ].join(' ')}
     >
       <div className="flex items-start gap-3 px-3 py-2.5">
         <span
           className={[
-            'mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded font-mono text-2xs tabular-nums transition-colors duration-300',
-            highlighted ? 'bg-signal text-ink-950' : 'bg-ink-700 text-signal',
+            'mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md font-mono text-2xs tabular-nums transition-colors duration-300',
+            highlighted ? 'bg-signal text-onaccent' : 'bg-ink-700 text-signal',
           ].join(' ')}
           aria-hidden="true"
         >
@@ -60,12 +60,12 @@ export default function CitationCard({
             <button
               type="button"
               onClick={() => onOpenDocument(citation.document_id)}
-              className="truncate text-left text-[13px] text-paper decoration-line-strong underline-offset-4 hover:underline"
+              className="truncate text-left text-[13px] font-medium text-paper decoration-line-strong underline-offset-4 hover:underline"
               title={`Open all chunks from ${citation.filename}`}
             >
               {citation.filename}
             </button>
-            <span className="font-mono text-2xs tabular-nums text-paper-mute">
+            <span className="font-mono text-2xs tabular-nums text-paper-faint">
               chunk {citation.chunk_index}
             </span>
           </div>
@@ -111,8 +111,8 @@ export default function CitationCard({
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         aria-controls={`${anchorId}-body`}
-        className="flex w-full items-center gap-1 rounded-b-lg border-t border-line-soft px-3 py-1.5
-                   font-mono text-2xs uppercase tracking-micro text-paper-faint
+        className="flex w-full items-center gap-1.5 border-t border-line-soft px-3 py-2
+                   text-[12px] text-paper-faint
                    transition-colors duration-150 hover:bg-ink-800 hover:text-paper-dim"
       >
         <motion.span
@@ -122,7 +122,7 @@ export default function CitationCard({
         >
           <ChevronRight size={11} />
         </motion.span>
-        {open ? 'collapse chunk' : 'show full chunk'}
+        {open ? 'Collapse' : 'Show the full chunk'}
       </button>
     </motion.li>
   );

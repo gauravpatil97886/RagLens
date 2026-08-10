@@ -43,7 +43,7 @@ export default function OverlapDiagram({
       <div className="scroll-quiet overflow-x-auto">
         <svg
           viewBox={`0 0 ${W} ${height}`}
-          className="w-full min-w-[27rem]"
+          className="w-full min-w-[24rem]"
           role="img"
           aria-label={`Three consecutive chunks of ${chunkSize} characters, each starting ${stride} characters after the last, so consecutive chunks share ${overlap} characters.`}
         >
@@ -55,7 +55,7 @@ export default function OverlapDiagram({
                 y={bandTop}
                 width={overlap * s}
                 height={bandBottom - bandTop}
-                fill="#F0A93B"
+                className="fill-signal"
                 opacity={0.14}
               />
               <line
@@ -63,7 +63,7 @@ export default function OverlapDiagram({
                 y1={bandTop}
                 x2={x(start)}
                 y2={bandBottom}
-                stroke="#F0A93B"
+                className="stroke-signal"
                 strokeWidth={1}
                 strokeDasharray="2 3"
                 opacity={0.6}
@@ -73,7 +73,7 @@ export default function OverlapDiagram({
                 y1={bandTop}
                 x2={x(start + overlap)}
                 y2={bandBottom}
-                stroke="#F0A93B"
+                className="stroke-signal"
                 strokeWidth={1}
                 strokeDasharray="2 3"
                 opacity={0.6}
@@ -91,13 +91,13 @@ export default function OverlapDiagram({
                   width={chunkSize * s}
                   height={BAR_H}
                   rx={4}
-                  fill="#C08028"
+                  className="fill-signal-dim"
                 />
                 <text
                   x={x(start) + 8}
                   y={y + BAR_H / 2 + 3.5}
                   fontSize={10}
-                  fill="#0B1114"
+                  className="fill-ink-900"
                   fontFamily="'JetBrains Mono', ui-monospace, monospace"
                 >
                   chunk {i} · {integer(start)}–{integer(start + chunkSize)}
@@ -112,7 +112,7 @@ export default function OverlapDiagram({
             y={height - 6}
             fontSize={10}
             textAnchor="middle"
-            fill="#F0A93B"
+            className="fill-signal"
             fontFamily="'JetBrains Mono', ui-monospace, monospace"
           >
             {overlap} shared
@@ -121,7 +121,7 @@ export default function OverlapDiagram({
             x={PAD}
             y={14}
             fontSize={10}
-            fill="#697E83"
+            className="fill-paper-mute"
             fontFamily="'JetBrains Mono', ui-monospace, monospace"
           >
             character 0
@@ -131,7 +131,7 @@ export default function OverlapDiagram({
             y={14}
             fontSize={10}
             textAnchor="end"
-            fill="#697E83"
+            className="fill-paper-mute"
             fontFamily="'JetBrains Mono', ui-monospace, monospace"
           >
             {integer(span)}
@@ -139,7 +139,7 @@ export default function OverlapDiagram({
         </svg>
       </div>
 
-      <figcaption className="mt-1 max-w-[46rem] font-serif text-[14px] leading-[1.65] text-paper-dim">
+      <figcaption className="mt-1 max-w-[46rem] text-[14px] leading-[1.65] text-paper-dim">
         Each chunk starts <span className="font-mono text-2xs text-paper">{integer(stride)}</span>{' '}
         characters after the one before, not {integer(chunkSize)} — so every boundary is covered
         twice. Without that repeat, a sentence split across the seam would live in neither

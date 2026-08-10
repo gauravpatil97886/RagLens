@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AnimatePresence } from 'framer-motion';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import { PanelLeft } from 'lucide-react';
 import {
   ApiError,
   deleteDocument,
   getHealth,
+  getMetrics,
   getStats,
   listDocuments,
   streamChat,
@@ -23,12 +25,15 @@ import type {
 } from './types';
 import CacheDrawer from './components/CacheDrawer';
 import ChatPanel from './components/ChatPanel';
+import type { ComposerHandle } from './components/Composer';
 import ChunkViewer from './components/ChunkViewer';
 import CorpusRail from './components/CorpusRail';
 import Dashboard from './components/Dashboard';
-import Header from './components/Header';
 import PipelineView from './components/PipelineView';
+import ShortcutsDialog from './components/ShortcutsDialog';
+import Sidebar from './components/Sidebar';
 import Toasts, { type Toast } from './components/Toasts';
+import { useTheme } from './lib/theme';
 import { screenFile } from './components/UploadZone';
 
 type Inspector = { kind: 'chunks'; documentId: number } | { kind: 'cache' } | null;
@@ -47,6 +52,8 @@ const uid = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${(counter
 const POLL_MS = 6000;
 
 export default function App() {
+  const reduce = useReducedMotion() ?? false;
+
   /* ── Corpus ───────────────────────────────────────────────────────────── */
   const [documents, setDocuments] = useState<DocumentMeta[]>([]);
   const [docsLoading, setDocsLoading] = useState(true);
@@ -66,7 +73,12 @@ export default function App() {
   const [unreachable, setUnreachable] = useState(false);
   const [inspector, setInspector] = useState<Inspector>(null);
   const [railOpen, setRailOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const composerRef = useRef<ComposerHandle | null>(null);
+  /** Ledger rows already attributed to a turn, so two turns never claim one call. */
+  const claimedCalls = useRef<Set<number>>(new Set());
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const theme = useTheme();
   const [view, setView] = useState<View>(viewFromHash);
 
   // Back/forward should move between views, so the hash is the source of truth
@@ -164,12 +176,12 @@ export default function App() {
 
   const scopeLabel =
     readyDocs.length === 0
-      ? 'no documents ingested'
+      ? 'No documents ingested yet'
       : selected.size === 0
-        ? 'select a document to search'
+        ? 'Tick a document to search it'
         : allSelected
-          ? `searching all ${readyDocs.length} document${readyDocs.length === 1 ? '' : 's'}`
-          : `searching ${selected.size} of ${readyDocs.length} documents`;
+          ? `Searching all ${readyDocs.length} document${readyDocs.length === 1 ? '' : 's'}`
+          : `Searching ${selected.size} of ${readyDocs.length} documents`;
 
   const toggleDocument = useCallback((id: number) => {
     setSelected((prev) => {
@@ -360,6 +372,32 @@ export default function App() {
     );
   }, []);
 
+  /**
+   * Name the model that actually wrote an answer.
+   *
+   * The chat stream doesn't carry a model name, and the configured default is
+   * not a safe substitute — there is a fallback chain, so the preferred model
+   * is often not the one that answered. What *is* authoritative is the
+   * api_calls ledger the backend writes on every request, so this reads the
+   * newest successful generate row back out of /api/metrics and attributes it
+   * to the turn that just finished. Only one chat can be in flight at a time,
+   * and a row is claimed once, so the match is exact rather than a guess. If
+   * anything about that is uncertain the model line is simply left off.
+   */
+  const resolveModel = useCallback(async (assistantId: string) => {
+    try {
+      const metrics = await getMetrics();
+      const row = metrics.recent.find(
+        (r) => r.kind === 'generate' && !r.saved && r.ok && !claimedCalls.current.has(r.id),
+      );
+      if (!row) return;
+      claimedCalls.current.add(row.id);
+      patchAssistant(assistantId, (turn) => ({ ...turn, model: row.model }));
+    } catch {
+      // The footer drops the model line rather than inventing one.
+    }
+  }, [patchAssistant]);
+
   const ask = useCallback(
     (question: string) => {
       if (busy) return;
@@ -382,6 +420,7 @@ export default function App() {
           timings: null,
           error: null,
           startedAt: Date.now(),
+          model: null,
         },
       ]);
 
@@ -415,10 +454,15 @@ export default function App() {
       };
 
       let sawDone = false;
+      // Whether this run reached a model at all. A cache hit never does, and a
+      // failure has no answer to attribute — either way, no model line.
+      let reachedModel = false;
+      let failed = false;
 
       const onEvent = (event: StreamEvent) => {
         switch (event.type) {
           case 'cache':
+            reachedModel = !event.cache.hit;
             patchAssistant(assistantId, (turn) => ({ ...turn, cache: event.cache, phase: 'retrieving' }));
             break;
           case 'retrieval':
@@ -434,6 +478,7 @@ export default function App() {
             break;
           case 'done':
             sawDone = true;
+            if (event.cache) reachedModel = !event.cache.hit;
             flushNow();
             patchAssistant(assistantId, (turn) => ({
               ...turn,
@@ -444,6 +489,7 @@ export default function App() {
             break;
           case 'error':
             sawDone = true;
+            failed = true;
             flushNow();
             patchAssistant(assistantId, (turn) => ({
               ...turn,
@@ -473,6 +519,7 @@ export default function App() {
           }
           const message =
             err instanceof ApiError ? err.message : 'The answer stream failed unexpectedly.';
+          failed = true;
           patchAssistant(assistantId, (turn) => ({ ...turn, phase: 'error', error: message }));
           pushToast(message);
         })
@@ -480,17 +527,68 @@ export default function App() {
           if (abortRef.current === controller) abortRef.current = null;
           setBusy(false);
           void refreshStats();
+          if (reachedModel && !failed) void resolveModel(assistantId);
         });
     },
-    [busy, readyDocs.length, selected, allSelected, patchAssistant, pushToast, refreshStats],
+    [busy, readyDocs.length, selected, allSelected, patchAssistant, pushToast, refreshStats, resolveModel],
   );
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
   }, []);
 
+  /** Clear the thread. The stream is aborted first — a new chat means new. */
+  const newChat = useCallback(() => {
+    abortRef.current?.abort();
+    setTurns([]);
+    changeView('ask');
+    window.requestAnimationFrame(() => composerRef.current?.focus());
+  }, [changeView]);
+
   // Don't leave a stream running if the tab unmounts mid-answer.
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  /* ── Keyboard ─────────────────────────────────────────────────────────── */
+  // Only shortcuts that are actually wired live here, and none of them fire
+  // while you are mid-sentence in a field.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      // Both the event target and the focused element are checked: a key
+      // pressed inside the composer must never be read as a bare shortcut,
+      // and `?` typed into a question is a question mark, not a command.
+      const isField = (el: Element | null) =>
+        !!el &&
+        (el.tagName === 'INPUT' ||
+          el.tagName === 'TEXTAREA' ||
+          (el as HTMLElement).isContentEditable);
+      const typing = isField(e.target as Element | null) || isField(document.activeElement);
+
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        newChat();
+        return;
+      }
+
+      if (e.key === 'Escape' && busy) {
+        e.preventDefault();
+        stop();
+        return;
+      }
+
+      if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+
+      if (e.key === '/') {
+        e.preventDefault();
+        changeView('ask');
+        composerRef.current?.focus();
+      } else if (e.key === '?') {
+        e.preventDefault();
+        setShortcutsOpen((v) => !v);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [busy, changeView, newChat, stop]);
 
   /* ── Inspector ────────────────────────────────────────────────────────── */
 
@@ -507,79 +605,114 @@ export default function App() {
   /* ── Render ───────────────────────────────────────────────────────────── */
 
   return (
-    <div className="flex h-full flex-col bg-ink-900">
-      <Header
-        stats={stats}
-        health={health}
-        unreachable={unreachable}
-        view={view}
-        onChangeView={changeView}
-        onOpenCache={() => setInspector({ kind: 'cache' })}
-        onToggleRail={() => setRailOpen((v) => !v)}
-      />
-
-      {view === 'signals' && <Dashboard />}
-
-      {view === 'pipeline' && (
-        <PipelineView documents={documents} onOpenDocument={openDocument} />
+    <div className="flex h-full bg-ink-900">
+      {/* Backdrop for the sidebar, below the lg breakpoint only. */}
+      {railOpen && (
+        <button
+          type="button"
+          aria-label="Close the menu"
+          onClick={() => setRailOpen(false)}
+          className="fixed inset-0 z-30 bg-scrim/60 lg:hidden"
+        />
       )}
 
-      {/* Unmounted rather than hidden: a display:none scroll container loses its
+      <aside
+        className={[
+          'fixed inset-y-0 left-0 z-40 w-[17rem] transition-transform duration-200 ease-out',
+          'lg:static lg:z-auto lg:shrink-0 lg:translate-x-0 xl:w-[17.5rem]',
+          railOpen ? 'translate-x-0' : '-translate-x-full',
+        ].join(' ')}
+      >
+        <Sidebar
+          view={view}
+          onChangeView={changeView}
+          stats={stats}
+          health={health}
+          unreachable={unreachable}
+          onOpenCache={() => setInspector({ kind: 'cache' })}
+          onNewChat={newChat}
+          canNewChat={turns.length > 0}
+          onOpenShortcuts={() => setShortcutsOpen(true)}
+          theme={theme.choice}
+          onChooseTheme={theme.choose}
+          onClose={() => setRailOpen(false)}
+        >
+          {view === 'ask' && (
+            <CorpusRail
+              documents={documents}
+              loading={docsLoading}
+              error={docsError}
+              uploads={uploads}
+              selectedIds={selected}
+              activeDocumentId={inspector?.kind === 'chunks' ? inspector.documentId : null}
+              onFiles={(files) => void handleFiles(files)}
+              onDismissUpload={dismissUpload}
+              onToggle={toggleDocument}
+              onSelectAll={selectAll}
+              onOpenDocument={openDocument}
+              onDelete={(id) => void handleDelete(id)}
+              onRetry={() => {
+                setDocsLoading(true);
+                void refreshDocuments();
+              }}
+            />
+          )}
+        </Sidebar>
+      </aside>
+
+      {/* The only chrome the conversation gets on a narrow screen. */}
+      <button
+        type="button"
+        onClick={() => setRailOpen(true)}
+        aria-label="Open the menu"
+        className="fixed left-3 top-3 z-20 flex h-9 w-9 items-center justify-center rounded-xl
+                   border border-line bg-ink-850 text-paper-dim shadow-lift
+                   transition-colors hover:text-paper lg:hidden"
+      >
+        <PanelLeft size={16} />
+      </button>
+
+      {/* One view at a time, and the swap is a short crossfade rather than a cut:
+          the sidebar stays put while the thing beside it is exchanged. Views are
+          unmounted rather than hidden — a display:none scroll container loses its
           position, and coming back to the chat should land on the latest answer.
           Every piece of chat state — turns, uploads, the in-flight stream — lives
           up here in App, so nothing is lost. */}
-      {view === 'ask' && (
-      <div className="relative flex min-h-0 flex-1">
-        {/* Backdrop for the rail, below the lg breakpoint only. */}
-        {railOpen && (
-          <button
-            type="button"
-            aria-label="Close the corpus panel"
-            onClick={() => setRailOpen(false)}
-            className="fixed inset-0 z-30 bg-ink-950/60 lg:hidden"
-          />
-        )}
-
-        <aside
-          className={[
-            'fixed inset-y-0 left-0 z-40 w-[19rem] transition-transform duration-200 ease-out',
-            'lg:static lg:z-auto lg:w-[19rem] lg:shrink-0 lg:translate-x-0',
-            railOpen ? 'translate-x-0' : '-translate-x-full',
-          ].join(' ')}
+      <AnimatePresence mode="wait" initial={false}>
+        <motion.div
+          key={view}
+          className="relative flex min-h-0 min-w-0 flex-1 flex-col"
+          initial={{ opacity: 0, y: reduce ? 0 : 5 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{
+            opacity: 0,
+            y: reduce ? 0 : -3,
+            transition: reduce ? { duration: 0.001 } : { duration: 0.11, ease: 'easeIn' },
+          }}
+          transition={reduce ? { duration: 0.001 } : { duration: 0.19, ease: [0.16, 1, 0.3, 1] }}
         >
-          <CorpusRail
-            documents={documents}
-            loading={docsLoading}
-            error={docsError}
-            uploads={uploads}
-            selectedIds={selected}
-            activeDocumentId={inspector?.kind === 'chunks' ? inspector.documentId : null}
-            onFiles={(files) => void handleFiles(files)}
-            onDismissUpload={dismissUpload}
-            onToggle={toggleDocument}
-            onSelectAll={selectAll}
-            onOpenDocument={openDocument}
-            onDelete={(id) => void handleDelete(id)}
-            onRetry={() => {
-              setDocsLoading(true);
-              void refreshDocuments();
-            }}
-            onClose={() => setRailOpen(false)}
-          />
-        </aside>
+          {view === 'signals' && <Dashboard />}
 
-        <ChatPanel
-          turns={turns}
-          documents={documents}
-          busy={busy}
-          canAsk={readyDocs.length > 0 && selected.size > 0}
-          scopeLabel={scopeLabel}
-          onSend={ask}
-          onStop={stop}
-          onOpenDocument={openDocument}
-        />
-      </div>
-      )}
+          {view === 'pipeline' && (
+            <PipelineView documents={documents} onOpenDocument={openDocument} />
+          )}
+
+          {view === 'ask' && (
+            <ChatPanel
+              turns={turns}
+              documents={documents}
+              stats={stats}
+              busy={busy}
+              canAsk={readyDocs.length > 0 && selected.size > 0}
+              scopeLabel={scopeLabel}
+              onSend={ask}
+              onStop={stop}
+              onOpenDocument={openDocument}
+              composerRef={composerRef}
+            />
+          )}
+        </motion.div>
+      </AnimatePresence>
 
       <AnimatePresence>
         {inspector?.kind === 'cache' && (
@@ -588,6 +721,10 @@ export default function App() {
         {inspector?.kind === 'chunks' && inspectedDoc && (
           <ChunkViewer key={`chunks-${inspectedDoc.id}`} doc={inspectedDoc} onClose={closeInspector} />
         )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {shortcutsOpen && <ShortcutsDialog key="shortcuts" onClose={() => setShortcutsOpen(false)} />}
       </AnimatePresence>
 
       <Toasts toasts={toasts} onDismiss={dismissToast} />

@@ -166,11 +166,11 @@ export default function PipelineView({
       <div className="mx-auto w-full max-w-[74rem] px-4 py-6 sm:px-6 sm:py-8">
         <header>
           <p className="eyebrow">how this works</p>
-          <h1 className="mt-2 max-w-[38rem] font-serif text-[1.75rem] leading-tight text-paper sm:text-[2.1rem]">
+          <h1 className="mt-2 max-w-[38rem] text-[1.75rem] font-semibold leading-[1.14] tracking-[-0.022em] text-paper sm:text-[2.05rem]">
             Two pipelines, twelve steps, and every number on this page is the one currently in
             force
           </h1>
-          <p className="mt-2 max-w-[42rem] font-serif text-[14.5px] leading-[1.65] text-paper-dim">
+          <p className="mt-3 max-w-[42rem] text-[14.5px] leading-[1.65] text-paper-dim">
             The left column runs once per uploaded file. The right column runs once per
             question, and tries twice to stop before it reaches the model.
           </p>
@@ -211,7 +211,7 @@ export default function PipelineView({
               aria-label="Ingest pipeline"
             >
               <p className="eyebrow text-paper-dim">ingest · once per file</p>
-              <p className="mt-1.5 font-serif text-[14px] leading-[1.6] text-paper-mute">
+              <p className="mt-1.5 text-[14px] leading-[1.6] text-paper-mute">
                 Everything below happens while the upload card is on screen. The card is not a
                 progress animation — each stage you see is a server event.
               </p>
@@ -353,7 +353,7 @@ export default function PipelineView({
               aria-label="Query pipeline"
             >
               <p className="eyebrow text-paper-dim">query · once per question</p>
-              <p className="mt-1.5 font-serif text-[14px] leading-[1.6] text-paper-mute">
+              <p className="mt-1.5 text-[14px] leading-[1.6] text-paper-mute">
                 Two of these steps can end the run early. The dashed mint markers are the exits.
               </p>
 
@@ -514,7 +514,7 @@ export default function PipelineView({
                   </li>
                 ))}
               </ul>
-              <p className="mt-3 max-w-[46rem] font-serif text-[14px] leading-[1.65] text-paper-dim">
+              <p className="mt-3 max-w-[46rem] text-[14px] leading-[1.65] text-paper-dim">
                 They are not interchangeable. The embedding cache saves work at ingest and on
                 repeated questions; the exact query cache saves an embedding call and a
                 generation; the semantic query cache saves only the generation, because the

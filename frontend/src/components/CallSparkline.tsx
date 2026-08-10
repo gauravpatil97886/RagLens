@@ -14,7 +14,7 @@ import { KIND_INK } from './figures';
 
 const STRIDE = 4;
 const BAR = 3;
-const H = 44;
+const H = 64;
 
 function hhmm(iso: string): string {
   const ms = Date.parse(iso);
@@ -68,14 +68,27 @@ export default function CallSparkline({ series }: { series: Timeseries }) {
         </p>
       </div>
 
-      <svg
-        viewBox={`0 0 ${width} ${H + 1}`}
-        preserveAspectRatio="none"
-        className="mt-2 h-11 w-full"
-        role="img"
-        aria-label={`Per-minute API calls for the last ${series.minutes} minutes: ${made} calls made, ${saved} prevented by the cache. Peak ${peak} in one minute.`}
-        onMouseLeave={() => setHover(null)}
-      >
+      {/* The plot is framed top and bottom: the ceiling is the busiest minute in
+          the window, the floor is zero. Without those two rules a sparkline of
+          mostly-empty minutes has no scale at all. */}
+      <div className="mt-3 flex items-stretch gap-2.5">
+        {/* A two-tick axis: the busiest minute in the window, and zero. */}
+        <div
+          className="flex w-7 shrink-0 flex-col justify-between text-right font-mono text-2xs tabular-nums leading-none text-paper-faint"
+          aria-hidden="true"
+        >
+          <span>{peak}</span>
+          <span>0</span>
+        </div>
+        <svg
+          viewBox={`0 0 ${width} ${H + 1}`}
+          preserveAspectRatio="none"
+          className="h-16 min-w-0 flex-1"
+          role="img"
+          aria-label={`Per-minute API calls for the last ${series.minutes} minutes: ${made} calls made, ${saved} prevented by the cache. Peak ${peak} in one minute.`}
+          onMouseLeave={() => setHover(null)}
+        >
+        <rect x={0} y={0} width={width} height={0.6} fill="rgb(var(--line-soft))" />
         {points.map((p, i) => {
           const x = i * STRIDE;
           const madeH = (p.calls / peak) * H;
@@ -85,7 +98,7 @@ export default function CallSparkline({ series }: { series: Timeseries }) {
           return (
             <g key={p.t}>
               {p.calls > 0 && (
-                <rect x={x} y={H - madeH} width={BAR} height={madeH} fill={KIND_INK.generate} />
+                <rect x={x} y={H - madeH} width={BAR} height={madeH} style={{ fill: KIND_INK.generate }} />
               )}
               {p.saved > 0 && (
                 <rect
@@ -93,7 +106,7 @@ export default function CallSparkline({ series }: { series: Timeseries }) {
                   y={y(p.calls + p.saved)}
                   width={BAR}
                   height={Math.max(0.5, savedH - gap)}
-                  fill="#55D6A8"
+                  fill="rgb(var(--cache))"
                 />
               )}
               {/* Full-height hit target — the bars themselves are far too small. */}
@@ -102,14 +115,15 @@ export default function CallSparkline({ series }: { series: Timeseries }) {
                 y={0}
                 width={STRIDE}
                 height={H + 1}
-                fill={hover === i ? 'rgba(231,238,236,0.07)' : 'transparent'}
+                fill={hover === i ? 'rgb(var(--paper) / 0.09)' : 'transparent'}
                 onMouseEnter={() => setHover(i)}
               />
             </g>
           );
         })}
-        <rect x={0} y={H} width={width} height={1} fill="#1E3036" />
-      </svg>
+        <rect x={0} y={H} width={width} height={1} fill="rgb(var(--line))" />
+        </svg>
+      </div>
 
       {made === 0 && saved === 0 && (
         <p className="mt-1 font-mono text-2xs text-paper-faint">

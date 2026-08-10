@@ -40,3 +40,26 @@ export function stagger(reduce: boolean, step = 0.045): Variants {
     },
   };
 }
+
+/** Enter from the left, like something arriving along the pipeline. */
+export function arrive(reduce: boolean, distance = 10): Variants {
+  return {
+    hidden: { opacity: 0, x: reduce ? 0 : -distance },
+    show: { opacity: 1, x: 0 },
+  };
+}
+
+/**
+ * A stage in the answer sequence. `step` is its position in the pipeline
+ * (0 embed → 3 generate), which becomes its delay — so the pieces of a turn
+ * land in the order the backend produced them rather than all at once.
+ */
+export function stageEnter(reduce: boolean, step: number, distance = 6) {
+  return {
+    initial: { opacity: 0, y: reduce ? 0 : distance },
+    animate: { opacity: 1, y: 0 },
+    transition: reduce
+      ? { duration: 0.001 }
+      : { duration: DUR.base, ease: EASE, delay: Math.min(step, 4) * 0.055 },
+  };
+}

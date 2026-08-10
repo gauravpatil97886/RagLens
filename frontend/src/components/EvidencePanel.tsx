@@ -36,8 +36,8 @@ export default function EvidencePanel({
 
   if (citations.length === 0) {
     return (
-      <p className="font-mono text-2xs uppercase tracking-micro text-paper-faint">
-        retrieved nothing above the similarity floor
+      <p className="text-[12px] text-paper-faint">
+        Nothing in the corpus cleared the similarity floor, so this answer has no sources.
       </p>
     );
   }
@@ -49,36 +49,40 @@ export default function EvidencePanel({
 
   return (
     <section aria-label="Retrieved sources">
+      {/* One quiet line by default. It says enough to judge whether the answer
+          is worth trusting; the cards behind it are for when it isn't. */}
       <button
         type="button"
         onClick={() => onToggle(!open)}
         aria-expanded={open}
         aria-controls={bodyId}
-        className="group flex w-full items-center gap-2 rounded-md border border-line-soft bg-ink-850/60 px-2.5 py-1.5
-                   text-left transition-colors duration-150 hover:border-line hover:bg-ink-850"
+        className={[
+          'group -ml-2 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left',
+          'text-[12px] transition-colors duration-150 hover:bg-ink-850',
+          open ? 'text-paper-mute' : 'text-paper-faint hover:text-paper-mute',
+        ].join(' ')}
       >
         <motion.span
-          className="block shrink-0 text-paper-faint group-hover:text-signal"
+          aria-hidden="true"
+          className="block shrink-0"
           animate={{ rotate: open ? 90 : 0 }}
           transition={transition(reduce, 0.18)}
         >
-          <ChevronRight size={13} />
+          <ChevronRight size={12} />
         </motion.span>
 
-        <FileSearch size={11} strokeWidth={2.5} className="shrink-0 text-signal/80" />
+        <FileSearch size={12} strokeWidth={2.2} className="shrink-0 text-signal/70" />
 
-        <span className="min-w-0 flex-1 truncate font-mono text-2xs tabular-nums text-paper-mute">
-          <span className="uppercase tracking-micro">
-            {citations.length} source{citations.length === 1 ? '' : 's'}
-          </span>
-          <span className="mx-1.5 text-paper-faint">·</span>
+        <span className="min-w-0 flex-1 truncate tabular-nums">
+          {citations.length} source{citations.length === 1 ? '' : 's'}
+          <span className="mx-1.5">·</span>
           top match <span className="text-paper-dim">{formatPct(top)}</span>
-          <span className="mx-1.5 text-paper-faint">·</span>
-          <span className="text-paper-dim">{fileLabel}</span>
+          <span className="mx-1.5">·</span>
+          <span className="text-paper-mute">{fileLabel}</span>
         </span>
 
-        <span className="shrink-0 font-mono text-2xs uppercase tracking-micro text-paper-faint opacity-0 transition-opacity group-hover:opacity-100">
-          {open ? 'hide' : 'check'}
+        <span className="hidden shrink-0 opacity-0 transition-opacity group-hover:opacity-100 sm:inline">
+          {open ? 'hide' : 'check them'}
         </span>
       </button>
 
@@ -97,7 +101,7 @@ export default function EvidencePanel({
               variants={stagger(reduce)}
               initial="hidden"
               animate="show"
-              className="mt-1.5 space-y-1.5"
+              className="mt-1.5 space-y-2"
             >
               {citations.map((c) => (
                 <CitationCard

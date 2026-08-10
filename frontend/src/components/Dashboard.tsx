@@ -28,10 +28,10 @@ const POLL_MS = 5000;
 function Skeleton() {
   return (
     <div className="space-y-4" aria-hidden="true">
-      <div className="h-36 animate-breathe rounded-xl border border-line bg-ink-850" />
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="h-40 animate-breathe border-y border-line bg-ink-850/40" />
+      <div className="grid gap-px overflow-hidden rounded-xl border border-line bg-line-soft sm:grid-cols-2 xl:grid-cols-4">
         {[0, 1, 2, 3].map((i) => (
-          <div key={i} className="h-28 animate-breathe rounded-xl border border-line bg-ink-850" />
+          <div key={i} className="h-28 animate-breathe bg-ink-850" />
         ))}
       </div>
       <div className="h-40 animate-breathe rounded-xl border border-line bg-ink-850" />
@@ -81,10 +81,10 @@ export default function Dashboard() {
         <header className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2">
           <div>
             <p className="eyebrow">observability</p>
-            <h1 className="mt-2 font-serif text-[1.75rem] leading-tight text-paper sm:text-[2.1rem]">
+            <h1 className="mt-2 text-[1.75rem] font-semibold leading-[1.14] tracking-[-0.022em] text-paper sm:text-[2.05rem]">
               What every answer actually cost
             </h1>
-            <p className="mt-2 max-w-[42rem] font-serif text-[14.5px] leading-[1.65] text-paper-dim">
+            <p className="mt-3 max-w-[42rem] text-[14.5px] leading-[1.65] text-paper-dim">
               Calls, tokens, latency and money — read straight out of the call ledger the
               backend writes on every request, including the ones it decided not to make.
             </p>
@@ -114,7 +114,7 @@ export default function Dashboard() {
           </div>
         )}
 
-        <div className="mt-6">
+        <div className="mt-7">
           {!metrics && !error && <Skeleton />}
 
           {metrics && (
@@ -122,7 +122,7 @@ export default function Dashboard() {
               variants={stagger(reduce, 0.05)}
               initial="hidden"
               animate="show"
-              className="space-y-4"
+              className="space-y-5"
             >
               <motion.div variants={rise(reduce)}>
                 <SavedVsMade totals={metrics.totals} cache={metrics.cache} />
@@ -141,8 +141,14 @@ export default function Dashboard() {
                 </motion.p>
               )}
 
-              <motion.div variants={rise(reduce)} className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              {/* One level below the hero: four facts in a hairline-divided row,
+                  sharing a single frame rather than each claiming a card. */}
+              <motion.div
+                variants={rise(reduce)}
+                className="grid gap-px overflow-hidden rounded-xl border border-line bg-line-soft sm:grid-cols-2 xl:grid-cols-4"
+              >
                 <MetricTile
+                  variant="strip"
                   label="cache hit rate"
                   value={metrics.cache.hit_rate * 100}
                   suffix="%"
@@ -150,6 +156,7 @@ export default function Dashboard() {
                   note={`${metrics.cache.hits} of ${metrics.cache.lookups} questions answered without asking the model — ${metrics.cache.exact_hits} exact, ${metrics.cache.semantic_hits} semantic.`}
                 />
                 <MetricTile
+                  variant="strip"
                   label="avg latency"
                   value={metrics.latency_ms.overall.avg}
                   suffix="ms"
@@ -158,6 +165,7 @@ export default function Dashboard() {
                   )}.`}
                 />
                 <MetricTile
+                  variant="strip"
                   label="tokens used"
                   value={metrics.totals.tokens.total}
                   note={`${integer(metrics.totals.tokens.measured)} measured from responses, ${integer(
@@ -165,6 +173,7 @@ export default function Dashboard() {
                   )} estimated for embeddings.`}
                 />
                 <MetricTile
+                  variant="strip"
                   label="failed calls"
                   value={metrics.totals.failed_calls}
                   tone={metrics.totals.failed_calls > 0 ? 'alert' : 'quiet'}

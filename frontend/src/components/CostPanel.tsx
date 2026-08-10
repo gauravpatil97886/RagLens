@@ -17,7 +17,7 @@ const SLICES = [
   { key: 'generate_input', label: 'generate · prompt', ink: TOKEN_INK.prompt },
   { key: 'generate_thinking', label: 'generate · thinking', ink: TOKEN_INK.thinking },
   { key: 'generate_output', label: 'generate · output', ink: TOKEN_INK.output },
-  { key: 'embed_input', label: 'embedding', ink: '#43575C' },
+  { key: 'embed_input', label: 'embedding', ink: 'rgb(var(--paper-faint))' },
 ] as const;
 
 const SAVED_WHY =

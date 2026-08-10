@@ -51,7 +51,7 @@ export default function TokenLedger({
             <p className="mt-2 font-mono text-[2.75rem] leading-none tabular-nums text-signal">
               {shownRatio.toFixed(1)}×
             </p>
-            <p className="mt-2 font-serif text-[14px] leading-[1.55] text-paper-dim">
+            <p className="mt-2 text-[14px] leading-[1.55] text-paper-dim">
               For every token of answer you read, the model spent{' '}
               <span className="text-paper">{ratio.toFixed(1)}</span> thinking. You pay for both
               at the same rate.

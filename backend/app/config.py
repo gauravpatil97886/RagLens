@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     # --- Gemini ---
     gemini_api_key: str = ""
     gemini_chat_model: str = "gemini-flash-latest"
+    # Comma-separated fallbacks, tried in order when the preferred model returns 429.
+    # The free tier meters per model, so a second model is a second daily allowance.
+    gemini_chat_fallbacks: str = ""
     gemini_embed_model: str = "gemini-embedding-001"
     embed_dim: int = 768
     # 'off' sends no thinking_config at all; anything else goes through as

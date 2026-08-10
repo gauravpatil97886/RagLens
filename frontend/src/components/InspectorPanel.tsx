@@ -39,7 +39,7 @@ export default function InspectorPanel({
         exit={{ opacity: 0 }}
         transition={transition(reduce, 0.18)}
         onClick={onClose}
-        className="fixed inset-0 z-40 bg-ink-950/65 backdrop-blur-[2px]"
+        className="fixed inset-0 z-40 bg-scrim/65 backdrop-blur-[2px]"
         aria-hidden="true"
       />
 

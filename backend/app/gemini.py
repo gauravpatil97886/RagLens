@@ -179,6 +179,16 @@ def record_saved(kind: str, model: str, n_items: int = 1) -> None:
     _record(kind, model, latency_ms=0, n_items=n_items, saved=True)
 
 
+def _is_daily_quota(exc: Exception) -> bool:
+    """Tell a per-day cap apart from a per-minute burst limit.
+
+    Gemini reports both as 429. The daily one names a quota id ending 'PerDay...'
+    (e.g. GenerateRequestsPerDayPerProjectPerModel-FreeTier).
+    """
+    text = str(exc)
+    return "PerDay" in text or "per_day" in text or "free_tier_requests" in text
+
+
 def _with_retry(what: str, call: Callable):
     """3 attempts, 1s/2s/4s + jitter, for 429 and 5xx only.
 
@@ -190,6 +200,12 @@ def _with_retry(what: str, call: Callable):
             return call()
         except genai_errors.ClientError as exc:
             if getattr(exc, "code", None) != 429 or attempt == 2:
+                raise
+            if _is_daily_quota(exc):
+                # A per-minute 429 clears in seconds and is worth waiting out. A per-DAY
+                # quota is not: the response still says "retry in 11s", but the counter
+                # resets at midnight Pacific. Backing off here just burns wall-clock
+                # before the caller falls over to another model.
                 raise
             log.warning("%s rate-limited (429), retrying in %.1fs", what, delay)
         except genai_errors.ServerError:
@@ -483,30 +499,77 @@ def _thinking_rejected(exc: Exception) -> bool:
     return isinstance(exc, genai_errors.ClientError) and getattr(exc, "code", None) == 400
 
 
+def quota_exhausted(exc: Exception) -> bool:
+    """A 429 that the retry wrapper already gave up on.
+
+    Gemini's free tier meters *per model*: the daily cap is
+    GenerateRequestsPerDayPerProjectPerModel, so gemini-3.6-flash running dry says nothing
+    about gemini-flash-lite-latest. The error even suggests "retry in 11s", which is
+    misleading — a daily quota does not come back in eleven seconds. Waiting is useless;
+    changing model is not.
+    """
+    return isinstance(exc, genai_errors.ClientError) and getattr(exc, "code", None) == 429
+
+
+def chat_models() -> list[str]:
+    """The ordered model chain. First entry is preferred; later ones are fallbacks tried
+    only when the one before is out of quota."""
+    chain = [settings.gemini_chat_model]
+    for name in (settings.gemini_chat_fallbacks or "").split(","):
+        name = name.strip()
+        if name and name not in chain:
+            chain.append(name)
+    return chain
+
+
+def _attempts() -> list[tuple[str, bool]]:
+    """(model, with_thinking) pairs, in the order they should be tried."""
+    return [(m, t) for m in chat_models() for t in _thinking_attempts()]
+
+
+def _handle_generate_failure(
+    exc: Exception, model: str, with_thinking: bool, last: bool, dead: set[str]
+) -> None:
+    """Decide whether to move to the next attempt or give up. Raises to give up.
+
+    `dead` collects models that are out of quota, so we skip their remaining
+    (thinking on/off) attempts instead of asking a model we know is empty.
+    """
+    if with_thinking and _thinking_rejected(exc):
+        log.warning("thinking_level=%r rejected by %s (%s); retrying without it",
+                    thinking_level(), model, exc)
+        return
+    if quota_exhausted(exc):
+        dead.add(model)
+        if not last:
+            log.warning("%s is out of quota; falling back to the next model", model)
+            return
+    raise exc
+
+
 def generate(prompt: str, system_instruction: str) -> str:
     client = get_client()
-    for with_thinking in _thinking_attempts():
+    attempts = _attempts()
+    dead: set[str] = set()
+    for i, (model, with_thinking) in enumerate(attempts):
+        if model in dead:
+            continue
         try:
             response = _api_call(
                 KIND_GENERATE,
-                settings.gemini_chat_model,
-                lambda: client.models.generate_content(
-                    model=settings.gemini_chat_model,
+                model,
+                lambda m=model, t=with_thinking: client.models.generate_content(
+                    model=m,
                     contents=prompt,
-                    config=_generate_config(system_instruction, with_thinking),
+                    config=_generate_config(system_instruction, t),
                 ),
                 usage_of=_response_usage,
             )
         except Exception as exc:
-            if with_thinking and _thinking_rejected(exc):
-                log.warning(
-                    "thinking_level=%r rejected by %s (%s); retrying without thinking_config",
-                    thinking_level(),
-                    settings.gemini_chat_model,
-                    exc,
-                )
-                continue
-            raise
+            _handle_generate_failure(
+                exc, model, with_thinking, last=i == len(attempts) - 1, dead=dead
+            )
+            continue
         return (response.text or "").strip()
     raise RuntimeError("unreachable")
 
@@ -516,13 +579,17 @@ def generate_stream(prompt: str, system_instruction: str) -> Iterator[str]:
     the wire to the client, replaying the call would duplicate tokens. The one retry is a
     400 rejecting thinking_config, which can only land before the first token."""
     client = get_client()
-    for with_thinking in _thinking_attempts():
+    attempts = _attempts()
+    dead: set[str] = set()
+    for i, (model, with_thinking) in enumerate(attempts):
+        if model in dead:
+            continue
         started = time.perf_counter()
         usage = _Usage()
         emitted = False
         try:
             stream = client.models.generate_content_stream(
-                model=settings.gemini_chat_model,
+                model=model,
                 contents=prompt,
                 config=_generate_config(system_instruction, with_thinking),
             )
@@ -537,22 +604,20 @@ def generate_stream(prompt: str, system_instruction: str) -> Iterator[str]:
         except Exception as exc:
             _record(
                 KIND_GENERATE,
-                settings.gemini_chat_model,
+                model,
                 latency_ms=_ms(started),
                 usage=usage,
                 ok=False,
                 error=f"{type(exc).__name__}: {exc}",
             )
-            if with_thinking and not emitted and _thinking_rejected(exc):
-                log.warning(
-                    "thinking_level=%r rejected by %s (%s); retrying without thinking_config",
-                    thinking_level(),
-                    settings.gemini_chat_model,
-                    exc,
-                )
-                continue
-            raise
-        _record(
-            KIND_GENERATE, settings.gemini_chat_model, latency_ms=_ms(started), usage=usage
-        )
+            # Once tokens are on the wire we cannot switch models — replaying would
+            # duplicate text the user has already seen. Fall over only before the first
+            # token, which is where a 429 or a rejected thinking_config always lands.
+            if emitted:
+                raise
+            _handle_generate_failure(
+                exc, model, with_thinking, last=i == len(attempts) - 1, dead=dead
+            )
+            continue
+        _record(KIND_GENERATE, model, latency_ms=_ms(started), usage=usage)
         return

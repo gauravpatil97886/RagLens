@@ -144,12 +144,18 @@ export default function IngestCard({ task, onDismiss }: { task: UploadTask; onDi
                       animate={{ opacity: 1, x: 0 }}
                       exit={{ opacity: 0 }}
                       transition={transition(reduce, 0.15)}
-                      className="flex items-baseline gap-1.5 font-mono text-2xs"
+                      /* It lands lit and cools over three-quarters of a second,
+                         so a burst of chunks reads as arrivals rather than as a
+                         list that silently got longer. */
+                      className={[
+                        '-mx-1 flex items-baseline gap-1.5 rounded px-1 font-mono text-2xs',
+                        reduce ? '' : 'animate-land',
+                      ].join(' ')}
                     >
-                      <span className="shrink-0 tabular-nums text-signal-dim">
+                      <span className="shrink-0 tabular-nums text-signal">
                         {String(chunk.index).padStart(2, '0')}
                       </span>
-                      <span className="flex-1 truncate text-paper-faint">{chunk.preview}</span>
+                      <span className="flex-1 truncate text-paper-mute">{chunk.preview}</span>
                       <span className="shrink-0 tabular-nums text-paper-faint">{chunk.nChars}c</span>
                     </motion.li>
                   ))}

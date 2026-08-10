@@ -20,9 +20,9 @@ import type { ApiCallKind } from '../types';
 export const KIND_ORDER: ApiCallKind[] = ['generate', 'embed_query', 'embed_document'];
 
 export const KIND_INK: Record<ApiCallKind, string> = {
-  generate: '#F0A93B', // signal
-  embed_query: '#C08028', // signal-dim
-  embed_document: '#8A5A1C', // one step deeper, same hue
+  generate: 'rgb(var(--chart-1))',
+  embed_query: 'rgb(var(--chart-2))',
+  embed_document: 'rgb(var(--chart-3))',
 };
 
 export const KIND_LABEL: Record<ApiCallKind, string> = {
@@ -40,9 +40,9 @@ export const KIND_NOTE: Record<ApiCallKind, string> = {
 /** Token classes share the marigold ramp; thinking takes the bright end, because
  *  it is the finding. Assignment is fixed, so a segment never changes colour. */
 export const TOKEN_INK = {
-  thinking: '#F0A93B',
-  prompt: '#C08028',
-  output: '#8A5A1C',
+  thinking: 'rgb(var(--chart-1))',
+  prompt: 'rgb(var(--chart-2))',
+  output: 'rgb(var(--chart-3))',
 } as const;
 
 /* ── Numbers ──────────────────────────────────────────────────────────── */

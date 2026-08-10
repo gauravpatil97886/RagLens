@@ -1,31 +1,43 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, RotateCcw } from 'lucide-react';
 import type { AssistantTurn } from '../types';
-import { rise, transition } from '../lib/motion';
+import { rise, stageEnter, transition } from '../lib/motion';
+import AnswerMeta from './AnswerMeta';
 import AnswerText from './AnswerText';
-import CacheBadge from './CacheBadge';
+import { collectTerms, TermStrip } from './AnswerBlocks';
+import CopyButton from './CopyButton';
 import EvidencePanel from './EvidencePanel';
-import LatencyRail from './LatencyRail';
+import { AnswerMark } from './Mark';
 
 /**
  * One answer.
  *
- * The answer is the thing that was asked for, so it comes first and it is the
- * largest text on screen. Underneath it, in descending order of how often
- * anyone needs them: the evidence it was built from (one line until you ask),
- * then what the run cost.
+ * Not a bubble. A bubble is the right shape for a sentence you typed and the
+ * wrong shape for six paragraphs you have to read — so the answer runs the full
+ * width of the reading column with a marker in the margin, and everything the
+ * run produced besides the prose folds away underneath it: the evidence behind
+ * one quiet line, the cost behind another.
  *
- * The pipeline order (cache → retrieve → generate) is still legible — it's the
- * LatencyRail's whole job — but it no longer dictates the reading order, which
- * is what put 5,000 characters of raw PDF above the answer.
+ * The pipeline order (cache → retrieve → generate) is still legible — it is the
+ * timing rail's whole job — but it lives one click down now instead of
+ * competing with the sentence you came here to read.
  */
 export default function AssistantMessage({
   turn,
+  isLast,
   onOpenDocument,
+  onAskTerm,
+  onAskAgain,
 }: {
   turn: AssistantTurn;
+  /** The newest turn keeps its controls visible; older ones reveal on hover. */
+  isLast: boolean;
   onOpenDocument: (documentId: number) => void;
+  /** Clicking a key term asks about it — omit to render the terms as plain chips. */
+  onAskTerm?: (term: string) => void;
+  /** Re-run this question. Omitted while another run is in flight. */
+  onAskAgain?: (question: string) => void;
 }) {
   const reduce = useReducedMotion() ?? false;
   const [evidenceOpen, setEvidenceOpen] = useState(false);
@@ -70,51 +82,105 @@ export default function AssistantMessage({
     };
   }, [jumpTarget, turn.id, reduce]);
 
-  useEffect(() => () => {
-    if (fadeRef.current) window.clearTimeout(fadeRef.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (fadeRef.current) window.clearTimeout(fadeRef.current);
+    },
+    [],
+  );
 
   const waiting = turn.phase === 'embedding' || turn.phase === 'retrieving';
   const hasAnswer = turn.text.length > 0 || turn.phase === 'generating';
+  const settled = turn.phase === 'done';
+
+  // The terms the answer put weight on. Recomputed only when the text settles,
+  // never on every streamed token.
+  const terms = useMemo(() => (settled ? collectTerms(turn.text) : []), [settled, turn.text]);
+
+  const controls = settled && (
+    <div
+      className={[
+        'flex items-center gap-0.5 transition-opacity duration-150',
+        isLast ? 'opacity-100' : 'opacity-0 focus-within:opacity-100 group-hover/turn:opacity-100',
+      ].join(' ')}
+    >
+      {turn.text.length > 0 && <CopyButton text={turn.text} label="Copy" />}
+      {onAskAgain && (
+        <button
+          type="button"
+          onClick={() => onAskAgain(turn.question)}
+          className="btn-ghost"
+          title="Run the same question again. A second run usually comes straight back from the cache."
+        >
+          <RotateCcw size={13} />
+          Ask again
+        </button>
+      )}
+    </div>
+  );
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: reduce ? 0 : 6 }}
+      initial={{ opacity: 0, y: reduce ? 0 : 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={transition(reduce)}
-      className="flex min-w-0 flex-col gap-3 pr-6"
+      className="group/turn flex min-w-0 gap-3.5"
     >
-      {/* The answer. Everything else on this turn is a footnote to it. */}
-      {hasAnswer && (
-        <motion.div variants={rise(reduce)} initial="hidden" animate="show" className="min-w-0 max-w-[46rem]">
-          <AnswerText text={turn.text} streaming={turn.phase === 'generating'} onCite={jumpToCitation} />
-        </motion.div>
-      )}
+      <AnswerMark phase={turn.phase} cacheHit={turn.cache?.hit ?? false} />
 
-      {/* Before the first token there is nothing to read, so say what's happening. */}
-      {waiting && !hasAnswer && (
-        <div className="flex items-center gap-2 font-mono text-2xs uppercase tracking-micro text-paper-mute">
-          <span className="animate-breathe">
-            {turn.phase === 'embedding' ? 'embedding question' : 'searching chunks'}
-          </span>
-          <span className="h-px w-8 animate-breathe bg-signal/60" />
-        </div>
-      )}
+      <div className="flex min-w-0 flex-1 flex-col gap-3 pt-0.5">
+        {/* The answer. Everything else on this turn is a footnote to it. */}
+        {hasAnswer && (
+          <motion.div variants={rise(reduce)} initial="hidden" animate="show" className="min-w-0">
+            <AnswerText
+              text={turn.text}
+              streaming={turn.phase === 'generating'}
+              onCite={jumpToCitation}
+            />
+          </motion.div>
+        )}
 
-      {turn.phase === 'error' && turn.error && (
-        <div className="flex max-w-[46rem] items-start gap-2.5 rounded-lg border border-alert/40 bg-alert/[0.07] px-3 py-2.5">
-          <AlertTriangle size={15} className="mt-0.5 shrink-0 text-alert" />
-          <div>
-            <p className="font-mono text-2xs uppercase tracking-micro text-alert">answer failed</p>
-            <p className="mt-1 text-[13.5px] leading-relaxed text-paper-dim">{turn.error}</p>
+        {/* Before the first token there is nothing to read, so say what is
+            happening. The step names are the pipeline's own, in order, so the
+            wait reads as progress through a known sequence rather than an
+            indefinite spinner. */}
+        {waiting && !hasAnswer && (
+          <div className="flex items-center gap-2.5 py-1 text-[13px] text-paper-mute">
+            <span>{turn.phase === 'embedding' ? 'Embedding your question' : 'Searching the chunks'}</span>
+            <span className="relative h-[3px] w-16 overflow-hidden rounded-full bg-ink-750">
+              <span className="absolute inset-y-0 left-0 w-1/2 animate-sweep rounded-full bg-signal" />
+            </span>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* The evidence, one line deep. Retrieval lands before the first token,
-          so this appears immediately — folded, so the answer keeps the room. */}
-      {citations && (
-        <div className="min-w-0 max-w-[46rem]">
+        {turn.phase === 'error' && turn.error && (
+          <motion.div
+            {...stageEnter(reduce, 0)}
+            className="flex items-start gap-2.5 rounded-xl border border-alert/35 bg-alert/[0.07] px-3.5 py-3"
+          >
+            <AlertTriangle size={15} className="mt-0.5 shrink-0 text-alert" />
+            <div className="min-w-0">
+              <p className="text-[13px] font-medium text-alert">That answer didn't finish</p>
+              <p className="mt-1 text-[13.5px] leading-relaxed text-paper-dim">{turn.error}</p>
+              {onAskAgain && (
+                <button
+                  type="button"
+                  onClick={() => onAskAgain(turn.question)}
+                  className="btn-ghost mt-2 -ml-2"
+                >
+                  <RotateCcw size={13} />
+                  Try again
+                </button>
+              )}
+            </div>
+          </motion.div>
+        )}
+
+        {terms.length > 0 && <TermStrip terms={terms} onAsk={onAskTerm} />}
+
+        {/* The evidence, one line deep. Retrieval lands before the first token,
+            so this appears immediately — folded, so the answer keeps the room. */}
+        {citations && (
           <EvidencePanel
             citations={citations}
             turnId={turn.id}
@@ -124,16 +190,19 @@ export default function AssistantMessage({
             jumpTarget={jumpTarget}
             onOpenDocument={onOpenDocument}
           />
-        </div>
-      )}
+        )}
 
-      {/* What the run cost, and where the answer came from. Quiet, and last. */}
-      {turn.phase !== 'error' && (
-        <div className="max-w-[46rem] border-t border-line-soft pt-2.5">
-          {turn.cache && <CacheBadge cache={turn.cache} />}
-          <LatencyRail phase={turn.phase} timings={turn.timings} cacheHit={turn.cache?.hit ?? false} />
-        </div>
-      )}
+        {/* What the run cost, and who wrote it. Quiet, and last. */}
+        {turn.phase !== 'error' && (
+          <AnswerMeta
+            phase={turn.phase}
+            timings={turn.timings}
+            cache={turn.cache}
+            model={turn.model}
+            actions={controls}
+          />
+        )}
+      </div>
     </motion.div>
   );
 }

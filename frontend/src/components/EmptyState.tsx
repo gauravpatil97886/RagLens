@@ -1,16 +1,92 @@
 import { motion, useReducedMotion } from 'framer-motion';
-import { CornerDownLeft, Repeat2 } from 'lucide-react';
-import type { DocumentMeta } from '../types';
-import { stagger, rise, transition } from '../lib/motion';
+import { ArrowUpRight, Repeat2, Upload } from 'lucide-react';
+import type { DocumentMeta, Stats } from '../types';
+import { stagger, rise } from '../lib/motion';
+import { formatPct } from '../lib/format';
+import { Mark } from './Mark';
 
 /**
- * The thesis, stated once. Everything below it in the app is the evidence.
+ * The resting state of the conversation.
+ *
+ * It says what this thing is in one sentence, offers three questions built from
+ * the documents that are actually loaded, and draws the corpus to scale so the
+ * search space is a visible size rather than a claim. Then it gets out of the
+ * way — the first question is meant to be typed within a few seconds of landing.
  */
+
+/** The corpus, drawn as the search space it is. One bar per document, to scale. */
+function SearchSpace({
+  documents,
+  stats,
+  reduce,
+}: {
+  documents: DocumentMeta[];
+  stats: Stats | null;
+  reduce: boolean;
+}) {
+  const total = documents.reduce((sum, d) => sum + d.n_chunks, 0);
+  const largest = Math.max(1, ...documents.map((d) => d.n_chunks));
+
+  return (
+    <div className="rounded-2xl border border-line bg-ink-850/70 px-4 py-3.5 shadow-inset">
+      <div className="flex items-baseline justify-between gap-3">
+        <h2 className="text-[12.5px] font-medium text-paper-dim">What can be searched</h2>
+        <span className="font-mono text-[11.5px] tabular-nums text-paper-faint">
+          {total} chunks
+        </span>
+      </div>
+
+      <ul className="mt-3 space-y-2.5">
+        {documents.map((doc, i) => (
+          <motion.li
+            key={doc.id}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={reduce ? { duration: 0.001 } : { duration: 0.22, delay: 0.08 + i * 0.05 }}
+          >
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="min-w-0 truncate text-[12.5px] text-paper-dim" title={doc.filename}>
+                {doc.filename}
+              </span>
+              <span className="shrink-0 font-mono text-[11.5px] tabular-nums text-paper-faint">
+                {doc.n_chunks}
+              </span>
+            </div>
+            {/* Width is chunk count against the largest document — a real ratio. */}
+            <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-ink-750">
+              <motion.div
+                className="h-full rounded-full bg-signal-dim"
+                initial={{ scaleX: 0 }}
+                animate={{ scaleX: doc.n_chunks / largest }}
+                style={{ transformOrigin: 'left' }}
+                transition={
+                  reduce
+                    ? { duration: 0.001 }
+                    : { duration: 0.5, ease: [0.16, 1, 0.3, 1], delay: 0.12 + i * 0.05 }
+                }
+              />
+            </div>
+          </motion.li>
+        ))}
+      </ul>
+
+      {stats && stats.cache_entries > 0 && (
+        <p className="mt-3 border-t border-line-soft pt-2.5 font-mono text-[11.5px] tabular-nums text-cache-dim">
+          {stats.cache_entries} answers stored · {formatPct(stats.hit_rate, 0)} of questions reused one
+        </p>
+      )}
+    </div>
+  );
+}
+
 export default function EmptyState({
   documents,
+  stats,
   onPick,
 }: {
   documents: DocumentMeta[];
+  stats: Stats | null;
+  /** Puts the question in the composer. It is not sent until you press Enter. */
   onPick: (question: string) => void;
 }) {
   const reduce = useReducedMotion() ?? false;
@@ -26,20 +102,21 @@ export default function EmptyState({
     : [];
 
   return (
-    <div className="flex min-h-full flex-col justify-center px-4 py-10 sm:px-8">
+    <div className="flex min-h-full flex-col justify-center px-4 py-12 sm:px-6">
       <motion.div
         variants={stagger(reduce, 0.06)}
         initial="hidden"
         animate="show"
-        className="mx-auto w-full max-w-[46rem]"
+        className="mx-auto w-full max-w-[47rem]"
       >
-        <motion.p variants={rise(reduce)} className="eyebrow">
-          retrieval-augmented generation
-        </motion.p>
+        <motion.div variants={rise(reduce)} className="flex items-center gap-2.5">
+          <Mark />
+          <span className="text-[12.5px] text-paper-mute">Retrieval-augmented generation</span>
+        </motion.div>
 
         <motion.h1
           variants={rise(reduce)}
-          className="mt-3 font-serif text-[2rem] leading-[1.18] text-paper sm:text-[2.6rem]"
+          className="mt-4 text-[1.9rem] font-semibold leading-[1.18] tracking-[-0.022em] text-paper sm:text-[2.15rem]"
         >
           Most demos show you the answer.
           <br />
@@ -48,42 +125,44 @@ export default function EmptyState({
 
         <motion.p
           variants={rise(reduce)}
-          className="mt-4 max-w-[38rem] font-serif text-[15px] leading-[1.7] text-paper-dim"
+          className="mt-3.5 max-w-[36rem] text-[14.5px] leading-[1.65] text-paper-dim"
         >
-          Every question is embedded, checked against a semantic cache, matched against your
-          chunks, and only then sent to a model. Each of those four steps is drawn on the
-          timing rail under the answer, with the exact chunks that were retrieved above it.
+          Every question is embedded, checked against a semantic cache, matched against your chunks,
+          and only then sent to a model. Each answer carries the exact passages it was written from
+          and what the run cost.
         </motion.p>
 
         {ready.length === 0 ? (
           <motion.div
             variants={rise(reduce)}
-            className="mt-8 rounded-xl border border-dashed border-line-strong bg-ink-850 px-5 py-5"
+            className="mt-8 flex items-start gap-3 rounded-2xl border border-dashed border-line-strong bg-ink-850 px-5 py-5"
           >
-            <p className="font-mono text-2xs uppercase tracking-micro text-signal">start here</p>
-            <p className="mt-2 text-[14.5px] leading-relaxed text-paper-dim">
-              Drop a PDF, Word file, Markdown, or plain text into the corpus panel. Ingestion
-              runs on upload — you'll see the chunk count as soon as it lands.
-            </p>
+            <Upload size={16} className="mt-0.5 shrink-0 text-signal" />
+            <div>
+              <p className="text-[14px] font-medium text-paper">Add a document to begin</p>
+              <p className="mt-1.5 text-[13.5px] leading-relaxed text-paper-dim">
+                Drop a PDF, Word file, Markdown, or plain text into the corpus panel on the left.
+                Ingestion runs on upload — the chunk count appears as soon as it lands.
+              </p>
+            </div>
           </motion.div>
         ) : (
           <>
-            <motion.p variants={rise(reduce)} className="eyebrow mt-9">
-              try one
-            </motion.p>
-            <motion.ul variants={stagger(reduce)} className="mt-3 space-y-2">
+            <motion.ul variants={stagger(reduce)} className="mt-8 space-y-2">
               {suggestions.map((q) => (
                 <motion.li key={q} variants={rise(reduce, 6)}>
                   <button
                     type="button"
                     onClick={() => onPick(q)}
-                    className="group flex w-full items-center justify-between gap-4 rounded-lg border border-line
-                               bg-ink-850 px-4 py-3 text-left text-[14.5px] text-paper-dim
-                               transition-colors duration-150 hover:border-signal/45 hover:bg-ink-800 hover:text-paper"
+                    title="Puts this in the box — press Enter to ask it"
+                    className="group flex w-full items-center justify-between gap-4 rounded-2xl border border-line
+                               bg-ink-850 px-4 py-3 text-left text-[14px] text-paper-dim shadow-inset
+                               transition-[color,border-color,background-color,transform] duration-150
+                               hover:-translate-y-px hover:border-signal/40 hover:bg-ink-800 hover:text-paper"
                   >
                     <span>{q}</span>
-                    <CornerDownLeft
-                      size={14}
+                    <ArrowUpRight
+                      size={15}
                       className="shrink-0 text-paper-faint transition-colors group-hover:text-signal"
                     />
                   </button>
@@ -93,14 +172,17 @@ export default function EmptyState({
 
             <motion.div
               variants={rise(reduce)}
-              transition={transition(reduce)}
-              className="mt-6 flex items-start gap-2.5 text-[13.5px] leading-relaxed text-paper-mute"
+              className="mt-5 flex items-start gap-2.5 text-[13px] leading-relaxed text-paper-mute"
             >
               <Repeat2 size={15} className="mt-0.5 shrink-0 text-cache" />
               <p>
-                Ask the same question twice. The second answer comes back from the cache with
-                its generate step at zero — no model call, no cost.
+                Ask the same question twice. The second answer comes back from the cache with its
+                generate step at zero — no model call, no cost.
               </p>
+            </motion.div>
+
+            <motion.div variants={rise(reduce)} className="mt-8">
+              <SearchSpace documents={ready} stats={stats} reduce={reduce} />
             </motion.div>
           </>
         )}

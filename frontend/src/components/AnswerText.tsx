@@ -9,6 +9,7 @@ import {
 } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { CodeBlock, DiagramBlock, FormulaBlock, isDiagram, toText } from './AnswerBlocks';
 
 /**
  * The generated answer.
@@ -155,16 +156,22 @@ function liftCitations(body: string): { text: string; marks: string } {
 }
 
 /**
- * A formula becomes a mono code span — mono is this UI's voice for a
- * machine-measured fact, which is exactly what a formula is. Short scraps of
- * inline math (`$2\times$`) stay as prose, because `2×` in a chip reads worse
- * than 2× in the sentence.
+ * A display formula becomes its own fenced block, tagged `formula`, which the
+ * component map below turns into a framed, copyable figure. An inline formula
+ * becomes a mono code span — mono is this UI's voice for a machine-measured
+ * fact, which is exactly what a formula is. Short scraps of inline math
+ * (`$2\times$`) stay as prose, because `2×` in a chip reads worse than 2× in
+ * the sentence.
+ *
+ * Citations are lifted out first and re-attached *after* the block, so a
+ * reference never ends up inside a fence where it would stop being clickable.
  */
 function formulaToMarkdown(inner: string, display: boolean): string {
   const { text, marks } = liftCitations(mathToText(inner));
   const clean = text.replace(/`/g, ''); // a stray backtick would break the span
   if (!clean) return marks;
-  const asCode = display || clean.length > 12 || /[=/]/.test(clean);
+  if (display) return `\n\n\`\`\`formula\n${clean}\n\`\`\`\n\n${marks}`;
+  const asCode = clean.length > 12 || /[=/]/.test(clean);
   return (asCode ? `\`${clean}\`` : clean) + (marks ? ` ${marks}` : '');
 }
 
@@ -251,7 +258,7 @@ function CiteGroup({ nums, onCite }: { nums: number[]; onCite: (n: number) => vo
           aria-label={`Show source ${n}`}
           title={`Show source ${n}`}
           className="px-[0.42em] py-[0.34em] text-signal transition-colors duration-150
-                     hover:bg-signal hover:text-ink-950"
+                     hover:bg-signal hover:text-onaccent"
         >
           {n}
         </button>
@@ -287,38 +294,40 @@ function buildComponents(onCite: (n: number) => void): Components {
   const cite = (children: ReactNode) => withCitations(children, onCite);
 
   return {
-    p: ({ children }) => <p className="my-2.5 first:mt-0 last:mb-0">{cite(children)}</p>,
+    p: ({ children }) => <p className="my-3 first:mt-0 last:mb-0">{cite(children)}</p>,
 
-    // Headings speak in the label voice: mono micro-caps, like every other
-    // structural marker in this UI.
+    // Headings inside an answer are section breaks in something you are
+    // reading, so they are set in the reading face, one notch up and heavier.
+    // They used to be mono micro-caps, which made every answer look like a
+    // config dump.
     h1: ({ children }) => (
-      <h3 className="mb-1.5 mt-4 font-mono text-2xs uppercase tracking-micro text-signal first:mt-0">
+      <h3 className="mb-2 mt-6 text-[1.0625rem] font-semibold tracking-[-0.01em] text-paper first:mt-0">
         {cite(children)}
       </h3>
     ),
     h2: ({ children }) => (
-      <h3 className="mb-1.5 mt-4 font-mono text-2xs uppercase tracking-micro text-signal first:mt-0">
+      <h3 className="mb-2 mt-6 text-[1.0625rem] font-semibold tracking-[-0.01em] text-paper first:mt-0">
         {cite(children)}
       </h3>
     ),
     h3: ({ children }) => (
-      <h4 className="mb-1.5 mt-3.5 font-mono text-2xs uppercase tracking-micro text-paper-mute first:mt-0">
+      <h4 className="mb-1.5 mt-5 text-[0.95rem] font-semibold text-paper first:mt-0">
         {cite(children)}
       </h4>
     ),
     h4: ({ children }) => (
-      <h5 className="mb-1 mt-3 font-mono text-2xs uppercase tracking-micro text-paper-mute first:mt-0">
+      <h5 className="mb-1.5 mt-4 text-[0.9rem] font-semibold text-paper-dim first:mt-0">
         {cite(children)}
       </h5>
     ),
 
     ul: ({ children }) => (
-      <ul className="my-2.5 list-disc space-y-1.5 pl-[1.15rem] marker:text-signal/60">{children}</ul>
+      <ul className="my-3 list-disc space-y-2 pl-[1.15rem] marker:text-signal/60">{children}</ul>
     ),
     ol: ({ children, start }) => (
       <ol
         start={start ?? undefined}
-        className="my-2.5 list-decimal space-y-1.5 pl-[1.6rem] marker:font-mono marker:text-[0.8em]
+        className="my-3 list-decimal space-y-2 pl-[1.6rem] marker:font-mono marker:text-[0.8em]
                    marker:tabular-nums marker:text-signal/70"
       >
         {children}
@@ -326,7 +335,19 @@ function buildComponents(onCite: (n: number) => void): Components {
     ),
     li: ({ children }) => <li className="pl-0.5 [&>ol]:mt-1.5 [&>ul]:mt-1.5">{cite(children)}</li>,
 
-    strong: ({ children }) => <strong className="font-semibold text-paper">{cite(children)}</strong>,
+    // What the model bolded is what the model thought mattered — so emphasis is
+    // treated as a term being introduced, and marked like one. A bolded
+    // *sentence* is just emphasis, and gets weight without the highlighter.
+    strong: ({ children }) => {
+      const raw = toText(children).trim();
+      const isTerm =
+        raw.length > 1 && raw.length <= 48 && raw.split(/\s+/).length <= 5 && /[a-zA-Z]/.test(raw);
+      return (
+        <strong className={['font-semibold text-paper', isTerm ? 'term-mark' : ''].join(' ')}>
+          {cite(children)}
+        </strong>
+      );
+    },
     em: ({ children }) => <em className="italic text-paper-dim">{cite(children)}</em>,
     del: ({ children }) => <del className="text-paper-mute line-through">{cite(children)}</del>,
 
@@ -349,21 +370,31 @@ function buildComponents(onCite: (n: number) => void): Components {
 
     // Code keeps the model's exact characters. Citations are deliberately not
     // touched in here — inside a code span, `[3]` is content, not a reference.
-    code: ({ children, className }) => (
-      <code
-        className={[
-          'rounded border border-line-soft bg-ink-750 px-1 py-0.5 font-mono text-[0.85em] text-paper-dim',
-          className ?? '',
-        ].join(' ')}
-      >
-        {children}
-      </code>
-    ),
-    pre: ({ children }) => (
-      <pre className="scroll-quiet my-3 overflow-x-auto rounded-lg border border-line bg-ink-850 p-3 font-mono text-[12.5px] leading-relaxed text-paper-dim">
-        {children}
-      </pre>
-    ),
+    //
+    // Only *inline* spans are styled here. A fenced block arrives as
+    // `pre > code`, and `pre` below owns that case entirely, so a block is
+    // never wrapped in a chip on its way to its frame.
+    code: ({ children, className }) => {
+      if (/language-/.test(className ?? '')) return <>{children}</>;
+      return (
+        <code className="rounded border border-line-soft bg-ink-750 px-1 py-0.5 font-mono text-[0.85em] text-paper-dim">
+          {children}
+        </code>
+      );
+    },
+
+    // A fence is one of three things, and which one decides the frame it gets.
+    pre: ({ children }) => {
+      const child = Children.toArray(children)[0] as
+        | { props?: { className?: string; children?: ReactNode } }
+        | undefined;
+      const lang = /language-(\w+)/.exec(child?.props?.className ?? '')?.[1]?.toLowerCase() ?? null;
+      const body = toText(child?.props?.children ?? children).replace(/\n$/, '');
+
+      if (lang === 'formula') return <FormulaBlock text={body} />;
+      if (isDiagram(lang, body)) return <DiagramBlock text={body} />;
+      return <CodeBlock text={body} lang={lang} />;
+    },
 
     // GFM tables scroll inside their own frame. The page never scrolls sideways.
     table: ({ children }) => (
@@ -441,7 +472,7 @@ export default function AnswerText({
   return (
     <div
       className={[
-        'answer-md min-w-0 font-serif text-[15.5px] leading-[1.7] text-paper',
+        'answer-md min-w-0 text-[15.5px] leading-[1.72] text-paper',
         streaming ? 'answer-streaming' : '',
       ].join(' ')}
     >

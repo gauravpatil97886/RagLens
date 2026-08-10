@@ -6,10 +6,10 @@ import { formatBytes, truncateMiddle } from '../lib/format';
 import { transition } from '../lib/motion';
 
 const STATUS: Record<DocumentMeta['status'], { label: string; className: string }> = {
-  pending: { label: 'pending', className: 'border-line-strong text-paper-mute' },
-  processing: { label: 'working', className: 'border-signal/45 text-signal animate-breathe' },
-  ready: { label: 'ready', className: 'border-line-strong text-paper-mute' },
-  failed: { label: 'failed', className: 'border-alert/50 text-alert' },
+  pending: { label: 'Pending', className: 'border-line-strong text-paper-mute' },
+  processing: { label: 'Working', className: 'border-signal/45 text-signal animate-breathe' },
+  ready: { label: 'Ready', className: 'border-line-strong text-paper-mute' },
+  failed: { label: 'Failed', className: 'border-alert/50 text-alert' },
 };
 
 export default function DocumentRow({
@@ -47,7 +47,7 @@ export default function DocumentRow({
       exit={{ opacity: 0, height: 0, marginBottom: 0 }}
       transition={transition(reduce)}
       className={[
-        'group overflow-hidden rounded-lg border transition-colors duration-150',
+        'group overflow-hidden rounded-xl border transition-colors duration-150',
         active ? 'border-signal/50 bg-ink-800' : 'border-line bg-ink-850 hover:border-line-strong',
       ].join(' ')}
     >
@@ -64,7 +64,7 @@ export default function DocumentRow({
             !selectable
               ? 'cursor-not-allowed border-line text-transparent'
               : selected
-                ? 'border-signal bg-signal text-ink-950'
+                ? 'border-signal bg-signal text-onaccent'
                 : 'border-line-strong text-transparent hover:border-paper-mute',
           ].join(' ')}
         >
@@ -91,7 +91,7 @@ export default function DocumentRow({
 
         <div className="flex shrink-0 items-center gap-1.5">
           <span
-            className={`rounded border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-micro ${status.className}`}
+            className={`rounded-md border px-1.5 py-0.5 text-[10.5px] ${status.className}`}
           >
             {status.label}
           </span>

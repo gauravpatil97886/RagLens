@@ -1,7 +1,7 @@
 import { motion, useReducedMotion } from 'framer-motion';
 import type { Phase, Timings } from '../types';
 import { formatMs } from '../lib/format';
-import { transition } from '../lib/motion';
+import { DUR, EASE, transition } from '../lib/motion';
 
 /**
  * The signature instrument.
@@ -67,10 +67,18 @@ export default function LatencyRail({ phase, timings, cacheHit }: Props) {
     return state === 'done' ? 24 : state === 'active' ? 30 : 8;
   };
 
+  /**
+   * When the run settles, the segments take their true widths one after another,
+   * left to right, in the order the pipeline ran them. Four independent tweens
+   * firing at once would say "these numbers changed"; a sequence says "this is
+   * what happened, in this order". The whole settle lands inside 400ms.
+   */
+  const settleDelay = (index: number) => (settled && !reduce ? index * 0.045 : 0);
+
   return (
     <div className="mt-3">
       <div
-        className="flex h-1.5 w-full items-stretch gap-px overflow-hidden rounded-full bg-ink-750"
+        className="flex h-2 w-full items-stretch gap-px overflow-hidden rounded-full bg-ink-750"
         role="img"
         aria-label={
           timings
@@ -78,7 +86,7 @@ export default function LatencyRail({ phase, timings, cacheHit }: Props) {
             : 'Timing breakdown, in progress.'
         }
       >
-        {SEGMENTS.map((seg) => {
+        {SEGMENTS.map((seg, i) => {
           const value = timings ? timings[seg.key] : null;
           const isVoid = settled && value === 0;
           const state = settled ? 'done' : liveState(phase, seg.key);
@@ -86,8 +94,11 @@ export default function LatencyRail({ phase, timings, cacheHit }: Props) {
           if (isVoid) {
             // A zero-length stage still occupies the rail, as an empty slot.
             return (
-              <div
+              <motion.div
                 key={seg.key}
+                initial={false}
+                animate={{ opacity: 1 }}
+                transition={{ delay: settleDelay(i), duration: reduce ? 0.001 : DUR.fast }}
                 className="relative w-6 shrink-0 rounded-full border border-dashed border-cache/50"
                 title={`${seg.label} skipped — served from cache`}
               />
@@ -107,7 +118,11 @@ export default function LatencyRail({ phase, timings, cacheHit }: Props) {
                 width: `${widthFor(seg.key, state)}%`,
                 opacity: state === 'pending' ? 0.35 : 1,
               }}
-              transition={transition(reduce, settled ? 0.42 : 0.3)}
+              transition={
+                reduce
+                  ? { duration: 0.001 }
+                  : { duration: settled ? 0.26 : 0.3, ease: EASE, delay: settleDelay(i) }
+              }
             >
               {state === 'active' && !reduce && (
                 <span className="absolute inset-y-0 left-0 w-1/2 animate-sweep bg-gradient-to-r from-transparent via-white/50 to-transparent" />
@@ -118,12 +133,15 @@ export default function LatencyRail({ phase, timings, cacheHit }: Props) {
       </div>
 
       <div className="mt-2 flex flex-wrap items-center gap-x-3.5 gap-y-1">
-        {SEGMENTS.map((seg) => {
+        {SEGMENTS.map((seg, i) => {
           const value = timings ? timings[seg.key] : null;
           const zeroed = value === 0;
           return (
-            <span
+            <motion.span
               key={seg.key}
+              initial={false}
+              animate={{ opacity: settled || value !== null ? 1 : 0.55 }}
+              transition={{ delay: settleDelay(i), duration: reduce ? 0.001 : DUR.fast }}
               className={[
                 'inline-flex items-center gap-1.5 font-mono text-2xs tabular-nums',
                 zeroed ? 'text-cache' : 'text-paper-mute',
@@ -134,7 +152,7 @@ export default function LatencyRail({ phase, timings, cacheHit }: Props) {
               <span className={zeroed ? 'text-cache' : 'text-paper-dim'}>
                 {value === null ? '··' : `${value}`}
               </span>
-            </span>
+            </motion.span>
           );
         })}
 
