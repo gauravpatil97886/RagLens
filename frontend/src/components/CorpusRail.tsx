@@ -1,20 +1,15 @@
-import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { RefreshCw } from 'lucide-react';
-import type { DocumentMeta, UploadTask } from '../types';
-import { transition } from '../lib/motion';
+import { AnimatePresence } from 'framer-motion';
+import { Plus, RefreshCw } from 'lucide-react';
+import type { DocumentMeta } from '../types';
 import DocumentRow from './DocumentRow';
-import IngestCard from './IngestCard';
-import UploadZone from './UploadZone';
 
 export default function CorpusRail({
   documents,
   loading,
   error,
-  uploads,
   selectedIds,
   activeDocumentId,
-  onFiles,
-  onDismissUpload,
+  onAdd,
   onToggle,
   onSelectAll,
   onOpenDocument,
@@ -24,18 +19,16 @@ export default function CorpusRail({
   documents: DocumentMeta[];
   loading: boolean;
   error: string | null;
-  uploads: UploadTask[];
   selectedIds: Set<number>;
   activeDocumentId: number | null;
-  onFiles: (files: File[]) => void;
-  onDismissUpload: (id: string) => void;
+  /** Opens the upload dialog. Ingestion no longer starts from the rail. */
+  onAdd: () => void;
   onToggle: (id: number) => void;
   onSelectAll: (all: boolean) => void;
   onOpenDocument: (id: number) => void;
   onDelete: (id: number) => void;
   onRetry: () => void;
 }) {
-  const reduce = useReducedMotion() ?? false;
   const ready = documents.filter((d) => d.status === 'ready');
   const allSelected = ready.length > 0 && ready.every((d) => selectedIds.has(d.id));
   const totalChunks = ready.reduce((sum, d) => sum + d.n_chunks, 0);
@@ -49,30 +42,24 @@ export default function CorpusRail({
         </span>
       </div>
 
+      <div className="px-3 pb-1">
+        <button
+          type="button"
+          onClick={onAdd}
+          title="Analyse a file and see what indexing it costs, before anything is spent"
+          className="flex w-full items-center gap-2 rounded-xl border border-line bg-ink-850 px-3 py-2
+                     text-[13px] font-medium text-paper-dim
+                     transition-[background-color,border-color,color] duration-150
+                     hover:border-signal/45 hover:bg-ink-800 hover:text-paper"
+        >
+          <Plus size={14} className="shrink-0 text-signal" />
+          Add document
+        </button>
+      </div>
+
       <div className="scroll-quiet min-h-0 flex-1 overflow-y-auto px-3 pb-3">
-        <UploadZone onFiles={onFiles} busy={uploads.length > 0} />
-
-        <AnimatePresence initial={false}>
-          {uploads.length > 0 && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={transition(reduce, 0.15)}
-            >
-              <ul className="mt-3 space-y-2">
-                <AnimatePresence initial={false}>
-                  {uploads.map((task) => (
-                    <IngestCard key={task.id} task={task} onDismiss={onDismissUpload} />
-                  ))}
-                </AnimatePresence>
-              </ul>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
         {documents.length > 0 && (
-          <div className="mb-2 mt-5 flex items-center justify-between gap-2">
+          <div className="mb-2 mt-4 flex items-center justify-between gap-2">
             <span className="text-[12px] text-paper-faint">
               In scope <span className="font-mono tabular-nums">{selectedIds.size}/{ready.length}</span>
             </span>
@@ -107,10 +94,10 @@ export default function CorpusRail({
           </ul>
         )}
 
-        {!loading && !error && documents.length === 0 && uploads.length === 0 && (
+        {!loading && !error && documents.length === 0 && (
           <p className="mt-5 px-1 text-[13px] leading-relaxed text-paper-mute">
             No documents yet. Whatever you add here becomes the only thing the model is
-            allowed to answer from.
+            allowed to answer from. Drop a file anywhere on this window to start.
           </p>
         )}
 

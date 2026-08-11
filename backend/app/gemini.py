@@ -339,6 +339,32 @@ def _embed(texts: list[str], task_type: str) -> EmbedProgress:
     return [cached[d] for d in digests]
 
 
+def plan_embeddings(texts: list[str], task_type: str = TASK_DOCUMENT) -> dict[str, int]:
+    """What embedding `texts` *would* cost. Makes no API call and writes nothing.
+
+    Every number here comes from the same code _embed() uses — the same sha256 over the
+    same text, the same embedding_cache lookup, the same _batches() split, the same
+    ~4 chars/token estimate — so the prediction cannot drift from what ingestion does.
+    Predicting with a guessed batch size would make the estimate a plausible-looking lie.
+    """
+    digests = [_sha256(t) for t in texts]
+    cached = _cache_get(digests, task_type)
+    n_cached = sum(1 for d in digests if d in cached)
+
+    todo: dict[str, str] = {}
+    for digest, text in zip(digests, texts, strict=True):
+        if digest not in cached and digest not in todo:
+            todo[digest] = text
+    pending = list(todo.values())
+
+    return {
+        "already_cached": n_cached,
+        "to_embed": len(texts) - n_cached,
+        "api_calls_needed": sum(1 for _ in _batches(pending)),
+        "estimated_tokens": _estimated_embed_usage(pending).total if pending else 0,
+    }
+
+
 def _drain(progress: EmbedProgress) -> list[list[float]]:
     """Run an _embed generator to completion and hand back what it returned."""
     while True:

@@ -18,6 +18,7 @@ from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
 from . import cache, db, extract, gemini, metrics, rag
 from .config import settings
@@ -152,6 +153,22 @@ def upload_document(file: UploadFile = File(...)):
     return _document(row, ingest_ms=int((time.perf_counter() - started) * 1000))
 
 
+@app.post("/api/documents/preflight")
+def preflight_document(file: UploadFile = File(...)):
+    """Analyse an upload and report what indexing it would cost. Spends nothing.
+
+    Same validation, same extractor, same splitter, same batching maths as the real
+    ingest — but no Gemini request and no row written, so the user can look at the price
+    before agreeing to it.
+    """
+    filename, data = _accept_upload(file)
+    try:
+        return rag.preflight(filename, data)
+    except (extract.ExtractionError, ValueError) as exc:
+        # Exactly the failures ingest would have hit, raised before anything was written.
+        raise HTTPException(400, str(exc)) from exc
+
+
 @app.post("/api/documents/stream")
 def upload_document_stream(file: UploadFile = File(...)):
     """Same ingestion, same pipeline, narrated as it happens.
@@ -161,11 +178,40 @@ def upload_document_stream(file: UploadFile = File(...)):
     """
     filename, data = _accept_upload(file)
 
+    # Shared between the generator and the cleanup below, which Starlette may run on a
+    # different thread once the response is over.
+    run: dict[str, Any] = {"document_id": None, "settled": False}
+
+    def cleanup():
+        """Delete the row of a run the client walked away from.
+
+        'settled' means the pipeline reached done or error — a finished document, or a
+        failed one the user is entitled to see. Anything else is a row still saying
+        'processing' that nothing will ever finish, so it goes. Idempotent, and never
+        raises: a failed cleanup must not become the error the client sees.
+        """
+        if run["settled"] or run["document_id"] is None:
+            return
+        try:
+            if rag.discard_partial(run["document_id"]):
+                log.info(
+                    "ingest of %s was abandoned; removed partial document %s and its chunks",
+                    filename,
+                    run["document_id"],
+                )
+        except Exception:
+            log.exception("failed to clean up abandoned document %s", run["document_id"])
+
     def events():
         started = time.perf_counter()
         try:
             for event in rag.ingest_events(filename, data):
+                if event["type"] == "started":
+                    run["document_id"] = event["document_id"]
+                elif event["type"] == "error":
+                    run["settled"] = True  # the row is already 'failed'; it stays
                 if event["type"] == "done":
+                    run["settled"] = True
                     # Only here does the raw row become the wire document, so the
                     # payload is byte-for-byte what POST /api/documents returns.
                     ingest_ms = int((time.perf_counter() - started) * 1000)
@@ -175,8 +221,15 @@ def upload_document_stream(file: UploadFile = File(...)):
                 else:
                     yield _sse(event)
         except Exception as exc:  # the stream is already open, so errors go inline
+            run["settled"] = True
             log.exception("ingest stream failed for %s", filename)
             yield _sse({"type": "error", "detail": f"{type(exc).__name__}: {exc}"})
+        finally:
+            # Reached via GeneratorExit if this generator is closed early. It often is
+            # not — a sync generator abandoned mid-stream is only finalised whenever the
+            # interpreter gets round to it — so the BackgroundTask below is the cleanup
+            # that actually happens on time, and this is the belt to its braces.
+            cleanup()
 
     return StreamingResponse(
         events(),
@@ -186,6 +239,9 @@ def upload_document_stream(file: UploadFile = File(...)):
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",  # stop nginx-style proxies buffering the stream
         },
+        # Runs once the response is over however it ended, including a client disconnect,
+        # which is the only moment we can be sure nobody is going to read the rest.
+        background=BackgroundTask(cleanup),
     )
 
 

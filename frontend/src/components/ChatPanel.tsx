@@ -27,6 +27,7 @@ export default function ChatPanel({
   onSend,
   onStop,
   onOpenDocument,
+  onAddDocument,
   composerRef,
 }: {
   turns: Turn[];
@@ -38,6 +39,8 @@ export default function ChatPanel({
   onSend: (question: string) => void;
   onStop: () => void;
   onOpenDocument: (documentId: number) => void;
+  /** Opens the upload dialog from the empty state. */
+  onAddDocument: () => void;
   composerRef?: React.Ref<ComposerHandle>;
 }) {
   const reduce = useReducedMotion() ?? false;
@@ -111,6 +114,7 @@ export default function ChatPanel({
             documents={documents}
             stats={stats}
             onPick={(q) => localComposer.current?.fill(q)}
+            onAddDocument={onAddDocument}
           />
         ) : (
           <div className="mx-auto flex max-w-[47rem] flex-col gap-8 px-4 pb-6 pt-8 sm:px-6">

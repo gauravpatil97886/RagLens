@@ -212,6 +212,17 @@ export default function Sidebar({
         </div>
 
         <ThemeToggle choice={theme} onChoose={onChooseTheme} />
+
+        {/* The colophon. A build has an author, and the foot of the rail is
+            where a printed instrument would put one — below the controls, out
+            of the reading path, and there on every screen. The house mark
+            signs it so it reads as a byline rather than a stray string. */}
+        <p className="flex items-center gap-2 px-1 pt-0.5 text-[11px] leading-none text-paper-faint">
+          <Mark className="scale-[0.78] opacity-80" />
+          <span>
+            Built by <span className="font-medium text-paper-mute">Gaurav</span>
+          </span>
+        </p>
       </div>
     </div>
   );

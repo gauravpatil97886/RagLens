@@ -22,6 +22,15 @@ CREATE TABLE IF NOT EXISTS documents (
     created_at  timestamptz NOT NULL DEFAULT now()
 );
 
+-- sha256 of the EXTRACTED text, not of the uploaded bytes: the same handbook saved as
+-- .md and as .docx is the same corpus content, and re-indexing it twice is the mistake
+-- worth catching. Nullable because documents ingested before this column existed have no
+-- hash and simply never match as duplicates.
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS content_sha256 text;
+
+CREATE INDEX IF NOT EXISTS documents_content_sha256_idx
+    ON documents (content_sha256) WHERE content_sha256 IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS chunks (
     id           bigserial PRIMARY KEY,
     document_id  bigint      NOT NULL REFERENCES documents(id) ON DELETE CASCADE,

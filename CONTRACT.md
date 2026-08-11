@@ -34,6 +34,43 @@ All errors use HTTP status + `{"detail": "human readable message"}`.
 `"error": "..."`. Ingestion is synchronous — the response returns when it is done.
 For live progress use `POST /api/documents/stream`; this endpoint stays as the fallback.
 
+## `POST /api/documents/preflight` — analyse a file WITHOUT spending anything
+`multipart/form-data`, field `file`, same extensions and 20 MB limit as upload.
+**Makes zero Gemini API calls.** It extracts and chunks the file in memory, then reports
+what ingesting it *would* cost, so the user decides before any money or quota is spent.
+Nothing is written to the database.
+
+**200 Response:**
+```json
+{
+  "filename": "handbook.pdf",
+  "mime_type": "application/pdf",
+  "size_bytes": 48211,
+  "n_chars": 51203,
+  "n_pages": 17,
+  "n_chunks": 42,
+  "chunk_chars": { "min": 814, "mean": 1112, "max": 1198 },
+  "preview_chunks": [ { "index": 0, "n_chars": 894, "preview": "first ~160 chars…" } ],
+  "embedding": {
+    "already_cached": 12,
+    "to_embed": 30,
+    "api_calls_needed": 6,
+    "estimated_tokens": 9200,
+    "tokens_estimated": true
+  },
+  "duplicate": { "document_id": 1, "filename": "handbook.pdf" },
+  "warnings": ["This file has no text layer — it is probably a scanned PDF."]
+}
+```
+`n_pages` is null for non-PDF. `preview_chunks` is the first 5 chunks only.
+`already_cached` counts chunks whose exact text is already in `embedding_cache`, so
+re-uploading a near-identical file honestly shows `api_calls_needed: 0`.
+`duplicate` is non-null when a ready document with identical extracted text already
+exists — the UI should offer to cancel rather than index it twice.
+`warnings` is a possibly-empty list of plain-English strings.
+On an unreadable file return `400` with `{"detail": "..."}` — the same errors ingest
+would have raised, surfaced before anything is written.
+
 ## `POST /api/documents/stream` — same upload, streamed
 Identical request: `multipart/form-data`, field name `file`, same extensions, same 20 MB
 limit. Rejections (`400`, `413`) are still ordinary HTTP errors — the stream only opens
@@ -41,6 +78,7 @@ once the file is accepted. Responds `200 text/event-stream`, one JSON object per
 line:
 
 ```
+data: {"type":"started","document_id":14}
 data: {"type":"stage","stage":"extracting","label":"Reading acme.pdf"}
 data: {"type":"stage","stage":"extracted","n_chars":9093,"label":"Extracted 9,093 characters"}
 data: {"type":"stage","stage":"chunking","label":"Splitting into chunks"}
@@ -71,6 +109,14 @@ is delayed to look smoother, so a stage that is instant arrives instantly.
   `api_calls: 0` — the embedding cache, demonstrated.
 
 Both endpoints run the same generator server-side, so they cannot drift apart.
+
+**Cancelling mid-way.** `started` is always the FIRST frame, carrying the row id, so the
+client can clean up a run it abandons. To cancel, abort the fetch and then call
+`DELETE /api/documents/{document_id}`. The server also cleans up on its own: if the
+client disconnects mid-stream, the ingest generator is closed and the partial document
+row and any chunks written so far are removed, so an abandoned upload never leaves a
+half-indexed document behind. Cancelling cannot un-spend embedding calls already made —
+but those vectors stay in `embedding_cache`, so re-uploading the same file is cheap.
 
 ## `GET /api/documents` — list
 ```json

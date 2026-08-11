@@ -189,6 +189,16 @@
     @apply hover:border-alert/60 hover:bg-alert/10 hover:text-alert;
   }
 
+  /* The committing action — the one button on a screen that spends something.
+     Filled, so it can never be mistaken for the safe control sitting next to
+     it. There is exactly one of these visible at a time. */
+  .btn-solid {
+    @apply inline-flex items-center gap-1.5 rounded-lg bg-signal px-3.5 py-2 text-[13px] font-medium
+           text-onaccent transition-[filter,transform] duration-150
+           hover:brightness-110 active:scale-[0.98]
+           disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:brightness-100;
+  }
+
   /* A quiet, borderless control for message actions and tray toggles. It has
      to disappear while you're reading and be obvious the moment you look. */
   .btn-ghost {

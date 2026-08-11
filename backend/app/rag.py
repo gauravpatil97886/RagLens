@@ -6,6 +6,7 @@ Answer:  (1) cache -> (2) embed question -> (3) retrieve -> (4) ground -> (5) ge
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from collections.abc import Iterator
@@ -89,6 +90,7 @@ def ingest_events(filename: str, data: bytes) -> Iterator[dict[str, Any]]:
     Yields one dict per real event — never a guess, never an interpolation. A stage that
     is genuinely instant simply yields twice in a row. The vocabulary:
 
+        {"type": "started", "document_id": 14}                   row exists, first frame
         {"type": "stage", "stage": "extracting", "label": ...}   a phase began
         {"type": "stage", "stage": "extracted", "n_chars": ...}  extraction finished
         {"type": "chunk", "index": 0, "n_chars": ..., "preview": ...}   per chunk
@@ -112,6 +114,10 @@ def ingest_events(filename: str, data: bytes) -> Iterator[dict[str, Any]]:
             """,
             (filename, mime_type, len(data)),
         ).fetchone()["id"]
+
+    # First frame, before any work: the client needs the row id to be able to abandon
+    # this run and clean up after itself.
+    yield {"type": "started", "document_id": document_id}
 
     try:
         yield {"type": "stage", "stage": "extracting", "label": f"Reading {filename}"}
@@ -186,10 +192,11 @@ def ingest_events(filename: str, data: bytes) -> Iterator[dict[str, Any]]:
             conn.execute(
                 """
                 UPDATE documents
-                   SET status = 'ready', n_chunks = %s, n_chars = %s, error = NULL
+                   SET status = 'ready', n_chunks = %s, n_chars = %s, error = NULL,
+                       content_sha256 = %s
                  WHERE id = %s
                 """,
-                (len(chunks), len(text), document_id),
+                (len(chunks), len(text), content_sha256(text), document_id),
             )
             # A new document changes the meaning of "search all documents".
             cache.invalidate_all_scope(conn)
@@ -212,6 +219,137 @@ def _preview(chunk: str, limit: int = 90) -> str:
     """The opening of a chunk on one line — enough to recognise it, never the whole thing."""
     flat = " ".join(chunk.split())
     return flat if len(flat) <= limit else flat[:limit].rstrip() + "…"
+
+
+def content_sha256(text: str) -> str:
+    """Identity of a document's *content*, so the same text uploaded under two filenames
+    (or two formats) is recognisable as the same corpus material."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def discard_partial(document_id: int) -> bool:
+    """Remove a document left behind by an ingest that never finished.
+
+    Guarded on status so it is safe to call unconditionally and safe to call twice: a run
+    that reached 'ready' is a real document and is never touched, and a row someone else
+    already deleted simply matches nothing. Chunks go with it via the FK cascade.
+    """
+    with db.connection() as conn:
+        deleted = conn.execute(
+            "DELETE FROM documents WHERE id = %s AND status <> 'ready' RETURNING id",
+            (document_id,),
+        ).fetchone()
+    return deleted is not None
+
+
+# ---------------------------------------------------------------------------
+# Preflight — what ingesting this file would cost, before spending anything
+# ---------------------------------------------------------------------------
+
+_PREFLIGHT_PREVIEW_CHUNKS = 5
+_PREFLIGHT_PREVIEW_CHARS = 160
+# Above this many embed requests the upload stops being instant and starts being a
+# noticeable chunk of a free-tier day, which is worth saying out loud.
+_MANY_API_CALLS = 20
+# A PDF page of real prose runs to thousands of characters. Far below that and the pages
+# are pictures with a caption — i.e. a scan that mostly failed to extract.
+_SPARSE_PDF_CHARS_PER_PAGE = 50
+
+
+def preflight(filename: str, data: bytes) -> dict[str, Any]:
+    """Everything ingest() would do except the parts that cost money or write rows.
+
+    Extraction and chunking are the real code paths, not a lookalike, and the embedding
+    figures come from gemini.plan_embeddings() — otherwise the estimate would be a
+    separate implementation free to disagree with reality, which is the one thing a
+    "what will this cost" screen must never do.
+    """
+    text = extract.extract_text(filename, data)
+    chunks = list(chunking.iter_chunks(text, settings.chunk_size, settings.chunk_overlap))
+    if not chunks:
+        raise extract.ExtractionError(f"'{filename}' produced no chunks after splitting.")
+
+    # Truncated exactly as ingestion truncates, because that — not the raw chunk — is the
+    # string that gets hashed, cached and embedded.
+    embedding = gemini.plan_embeddings([gemini.truncate_for_embedding(c) for c in chunks])
+
+    n_pages = extract.page_count(filename, data)
+    sizes = [len(c) for c in chunks]
+
+    return {
+        "filename": filename,
+        "mime_type": extract.mime_for(filename),
+        "size_bytes": len(data),
+        "n_chars": len(text),
+        "n_pages": n_pages,
+        "n_chunks": len(chunks),
+        "chunk_chars": {
+            "min": min(sizes),
+            "mean": round(sum(sizes) / len(sizes)),
+            "max": max(sizes),
+        },
+        "preview_chunks": [
+            {
+                "index": i,
+                "n_chars": len(chunk),
+                "preview": _preview(chunk, _PREFLIGHT_PREVIEW_CHARS),
+            }
+            for i, chunk in enumerate(chunks[:_PREFLIGHT_PREVIEW_CHUNKS])
+        ],
+        "embedding": {**embedding, "tokens_estimated": True},
+        "duplicate": find_duplicate(text),
+        "warnings": _preflight_warnings(filename, text, chunks, n_pages, embedding),
+    }
+
+
+def find_duplicate(text: str) -> dict[str, Any] | None:
+    """An already-indexed document with byte-identical extracted text, if there is one."""
+    with db.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT id, filename FROM documents
+             WHERE status = 'ready' AND content_sha256 = %s
+             ORDER BY id LIMIT 1
+            """,
+            (content_sha256(text),),
+        ).fetchone()
+    return None if row is None else {"document_id": row["id"], "filename": row["filename"]}
+
+
+def _preflight_warnings(
+    filename: str,
+    text: str,
+    chunks: list[str],
+    n_pages: int | None,
+    embedding: dict[str, int],
+) -> list[str]:
+    """Plain English, for someone who has never heard of a token or an embedding."""
+    warnings: list[str] = []
+
+    if n_pages and len(text) / n_pages < _SPARSE_PDF_CHARS_PER_PAGE:
+        warnings.append(
+            f"Only {len(text):,} characters came out of {n_pages} pages. This PDF is "
+            "probably scanned images with little or no text layer — this demo does not "
+            "run OCR, so most of the content will be missing."
+        )
+    if len(chunks) == 1:
+        warnings.append(
+            f"'{filename}' is short enough to fit in a single chunk, so retrieval will "
+            "always return the whole document — fine for a quick test, but it does not "
+            "show search doing any work."
+        )
+    if embedding["api_calls_needed"] > _MANY_API_CALLS:
+        warnings.append(
+            f"This will need {embedding['api_calls_needed']} embedding requests to "
+            f"Google for {embedding['to_embed']} chunks. That is a large slice of the "
+            "free tier's daily allowance and will take a while."
+        )
+    if embedding["to_embed"] == 0:
+        warnings.append(
+            "Every chunk of this file is already in the embedding cache, so indexing it "
+            "costs no API calls at all."
+        )
+    return warnings
 
 
 def get_document(document_id: int) -> dict[str, Any] | None:

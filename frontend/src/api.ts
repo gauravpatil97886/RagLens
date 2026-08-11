@@ -10,6 +10,7 @@ import type {
   IngestEvent,
   Metrics,
   Pipeline,
+  Preflight,
   Stats,
   StreamEvent,
 } from './types';
@@ -90,6 +91,21 @@ export function uploadDocument(file: File, signal?: AbortSignal): Promise<Docume
   form.append('file', file);
   // No Content-Type header — the browser must set the multipart boundary itself.
   return getJson<DocumentMeta>('/documents', { method: 'POST', body: form, signal });
+}
+
+/**
+ * Analyse a file without spending anything.
+ *
+ * Extracts and chunks it in memory and reports what ingesting it *would* cost.
+ * Zero model calls, nothing written to the database — so the reader gets to see
+ * the bill before agreeing to it. A `400` here is the same rejection ingest
+ * would have raised, surfaced early.
+ */
+export function preflightDocument(file: File, signal?: AbortSignal): Promise<Preflight> {
+  const form = new FormData();
+  form.append('file', file);
+  // No Content-Type header — the browser must set the multipart boundary itself.
+  return getJson<Preflight>('/documents/preflight', { method: 'POST', body: form, signal });
 }
 
 export async function deleteDocument(id: number, signal?: AbortSignal): Promise<void> {

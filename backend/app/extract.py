@@ -56,6 +56,22 @@ def extract_text(filename: str, data: bytes) -> str:
     return text
 
 
+def page_count(filename: str, data: bytes) -> int | None:
+    """Real page count for a PDF, None for every other format.
+
+    Only pages make sense as a unit here — a .md file has none, and inventing one from
+    character counts would be a made-up number in a report whose whole point is honesty.
+    """
+    if extension_of(filename) != ".pdf":
+        return None
+    try:
+        return len(PdfReader(io.BytesIO(data)).pages)
+    except Exception:
+        # Extraction has already succeeded by the time we ask, so a reader that now
+        # objects is a curiosity, not a failure: report "unknown" rather than blow up.
+        return None
+
+
 def _from_pdf(data: bytes, filename: str) -> str:
     try:
         reader = PdfReader(io.BytesIO(data))

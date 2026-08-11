@@ -36,6 +36,55 @@ export interface DocumentListResponse {
   documents: DocumentMeta[];
 }
 
+/* ── Preflight (POST /api/documents/preflight) ──────────────────────────── */
+/** What ingesting a file *would* cost. Zero API calls, nothing written. */
+
+export interface PreflightChunkChars {
+  min: number;
+  mean: number;
+  max: number;
+}
+
+/** One of the first five chunks, as the splitter would produce it. */
+export interface PreflightPreviewChunk {
+  index: number;
+  n_chars: number;
+  /** First ~160 characters. */
+  preview: string;
+}
+
+export interface PreflightEmbedding {
+  /** Chunks whose exact text is already in embedding_cache — these are free. */
+  already_cached: number;
+  to_embed: number;
+  api_calls_needed: number;
+  estimated_tokens: number;
+  /** Always true today: embedding responses carry no usage metadata. */
+  tokens_estimated: boolean;
+}
+
+/** A ready document with identical extracted text already exists. */
+export interface PreflightDuplicate {
+  document_id: number;
+  filename: string;
+}
+
+export interface Preflight {
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  n_chars: number;
+  /** Null for anything that isn't a PDF. */
+  n_pages: number | null;
+  n_chunks: number;
+  chunk_chars: PreflightChunkChars;
+  /** The first five chunks only. */
+  preview_chunks: PreflightPreviewChunk[];
+  embedding: PreflightEmbedding;
+  duplicate: PreflightDuplicate | null;
+  warnings: string[];
+}
+
 /* ── Chat ───────────────────────────────────────────────────────────────── */
 
 export interface Citation {
@@ -127,10 +176,21 @@ export interface ErrorEvent {
 export type StreamEvent = CacheEvent | RetrievalEvent | TokenEvent | DoneEvent | ErrorEvent;
 
 /* ── Ingest events (POST /api/documents/stream) ─────────────────────────── */
-/** Order: extracting → extracted → chunking → chunk* → chunked → embedding →
- *  embedding* → indexing → done. Every frame is a thing that actually happened. */
+/** Order: started → extracting → extracted → chunking → chunk* → chunked →
+ *  embedding → embedding* → indexing → done. Every frame is a thing that
+ *  actually happened. */
 
 export type IngestStage = 'extracting' | 'extracted' | 'chunking' | 'embedding' | 'indexing';
+
+/**
+ * Always the first frame. It carries the row id the server just created, which
+ * is the only way a client that abandons the run can clean up after itself:
+ * abort the fetch, then DELETE /api/documents/{document_id}.
+ */
+export interface IngestStartedEvent {
+  type: 'started';
+  document_id: number;
+}
 
 export interface IngestStageEvent {
   type: 'stage';
@@ -172,6 +232,7 @@ export interface IngestDoneEvent {
 }
 
 export type IngestEvent =
+  | IngestStartedEvent
   | IngestStageEvent
   | IngestChunkEvent
   | IngestChunkedEvent
@@ -490,32 +551,45 @@ export interface AssistantTurn {
 
 export type Turn = UserTurn | AssistantTurn;
 
-/** One chunk as it came off the splitter, kept for the live stack in the ingest card. */
+/** One chunk as it came off the splitter, kept for the live stack in the run. */
 export interface ChunkTile {
   index: number;
   nChars: number;
   preview: string;
 }
 
+/** Where the run is. 'queued' is before the first frame arrives. */
+export type RunStage = IngestStage | 'queued' | 'chunked' | 'done';
+
 /**
- * An upload in flight. Every field here is something the server told us happened —
- * nothing is inferred from elapsed time except `startedAt`, which is a clock, not a guess.
+ * A run of the ingest stream, as the modal sees it.
+ *
+ * Every field is something a server frame said, or a clock reading taken when a
+ * frame arrived. Nothing here is interpolated, and no rate is derived from
+ * anything but two real timestamps.
  */
-export interface UploadTask {
-  id: string;
-  filename: string;
-  size: number;
+export interface IngestRunState {
   startedAt: number;
-  /** 'queued' before the first frame; 'chunked' between the last chunk and embedding. */
-  stage: IngestStage | 'queued' | 'chunked' | 'done';
+  /** From the `started` frame. Null until it lands — cancel handles that. */
+  documentId: number | null;
+  stage: RunStage;
   /** The server's own words for the current stage. */
   label: string;
   nChars: number | null;
-  /** The most recent chunks; `nChunksSeen` is the true count. */
+  /** The most recent chunk previews; `nChunksSeen` is the true count. */
   chunks: ChunkTile[];
+  /** Every chunk's length, in order — the live histogram is drawn from this. */
+  chunkChars: number[];
   nChunksSeen: number;
   /** Set by the `chunked` frame, once splitting is finished. */
   nChunks: number | null;
   embed: { done: number; total: number; cached: number; apiCalls: number } | null;
+  /** performance.now() at the first and last frame of each measured phase. */
+  splitFrom: number | null;
+  splitTo: number | null;
+  embedFrom: number | null;
+  embedTo: number | null;
+  /** The finished document, from the `done` frame. */
+  document: DocumentMeta | null;
   error: string | null;
 }

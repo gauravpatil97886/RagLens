@@ -83,11 +83,14 @@ export default function EmptyState({
   documents,
   stats,
   onPick,
+  onAddDocument,
 }: {
   documents: DocumentMeta[];
   stats: Stats | null;
   /** Puts the question in the composer. It is not sent until you press Enter. */
   onPick: (question: string) => void;
+  /** Opens the upload dialog. */
+  onAddDocument: () => void;
 }) {
   const reduce = useReducedMotion() ?? false;
   const ready = documents.filter((d) => d.status === 'ready');
@@ -141,9 +144,13 @@ export default function EmptyState({
             <div>
               <p className="text-[14px] font-medium text-paper">Add a document to begin</p>
               <p className="mt-1.5 text-[13.5px] leading-relaxed text-paper-dim">
-                Drop a PDF, Word file, Markdown, or plain text into the corpus panel on the left.
-                Ingestion runs on upload — the chunk count appears as soon as it lands.
+                Drop a PDF, Word file, Markdown, or plain text anywhere on this window. You get a
+                reading of what indexing it costs — chunks, API calls, tokens — before anything is
+                sent to a model.
               </p>
+              <button type="button" onClick={onAddDocument} className="btn-solid mt-3">
+                Add a document
+              </button>
             </div>
           </motion.div>
         ) : (

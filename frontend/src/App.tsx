@@ -9,18 +9,14 @@ import {
   getStats,
   listDocuments,
   streamChat,
-  streamUpload,
 } from './api';
 import type {
   AssistantTurn,
-  ChunkTile,
   DocumentMeta,
   Health,
-  IngestEvent,
   Stats,
   StreamEvent,
   Turn,
-  UploadTask,
   View,
 } from './types';
 import CacheDrawer from './components/CacheDrawer';
@@ -33,8 +29,9 @@ import PipelineView from './components/PipelineView';
 import ShortcutsDialog from './components/ShortcutsDialog';
 import Sidebar from './components/Sidebar';
 import Toasts, { type Toast } from './components/Toasts';
+import UploadDialog from './components/UploadDialog';
 import { useTheme } from './lib/theme';
-import { screenFile } from './components/UploadZone';
+import { firstFile } from './lib/upload';
 
 type Inspector = { kind: 'chunks'; documentId: number } | { kind: 'cache' } | null;
 
@@ -58,7 +55,6 @@ export default function App() {
   const [documents, setDocuments] = useState<DocumentMeta[]>([]);
   const [docsLoading, setDocsLoading] = useState(true);
   const [docsError, setDocsError] = useState<string | null>(null);
-  const [uploads, setUploads] = useState<UploadTask[]>([]);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const knownReady = useRef<Set<number>>(new Set());
 
@@ -74,6 +70,9 @@ export default function App() {
   const [inspector, setInspector] = useState<Inspector>(null);
   const [railOpen, setRailOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  /** The upload dialog. `file` is a document dropped on the window, if any. */
+  const [upload, setUpload] = useState<{ file: File | null } | null>(null);
+  const [dragging, setDragging] = useState(false);
   const composerRef = useRef<ComposerHandle | null>(null);
   /** Ledger rows already attributed to a turn, so two turns never claim one call. */
   const claimedCalls = useRef<Set<number>>(new Set());
@@ -200,153 +199,74 @@ export default function App() {
   );
 
   /* ── Upload ───────────────────────────────────────────────────────────── */
+  // Ingestion happens in the dialog, which quotes the cost before spending it.
+  // App's job is only to open it, take the finished document, and keep the
+  // corpus list honest when a run is abandoned.
 
-  const patchUpload = useCallback((id: string, fn: (task: UploadTask) => UploadTask) => {
-    setUploads((prev) => prev.map((task) => (task.id === id ? fn(task) : task)));
+  const openUpload = useCallback((file: File | null = null) => {
+    setUpload({ file });
+    setRailOpen(false);
   }, []);
 
-  const handleFiles = useCallback(
-    async (files: File[]) => {
-      // Ingestion is CPU-bound on the server. One at a time.
-      for (const file of files) {
-        const rejection = screenFile(file);
-        if (rejection) {
-          pushToast(rejection);
-          continue;
-        }
+  const closeUpload = useCallback(() => setUpload(null), []);
 
-        const task: UploadTask = {
-          id: uid('upload'),
-          filename: file.name,
-          size: file.size,
-          startedAt: Date.now(),
-          stage: 'queued',
-          label: 'uploading',
-          nChars: null,
-          chunks: [],
-          nChunksSeen: 0,
-          nChunks: null,
-          embed: null,
-          error: null,
-        };
-        setUploads((prev) => [...prev, task]);
-
-        // Chunk frames arrive in a burst — the splitter is fast. Coalesce them onto
-        // animation frames so React commits once per frame, not once per chunk.
-        let pendingChunks: ChunkTile[] = [];
-        let frame: number | null = null;
-
-        const flushChunks = () => {
-          frame = null;
-          if (pendingChunks.length === 0) return;
-          const batch = pendingChunks;
-          pendingChunks = [];
-          patchUpload(task.id, (t) => ({
-            ...t,
-            // Only the newest few are rendered; keeping a few spare makes the
-            // exit animation look right without holding a whole document in state.
-            chunks: [...t.chunks, ...batch].slice(-8),
-            nChunksSeen: t.nChunksSeen + batch.length,
-          }));
-        };
-
-        const flushNow = () => {
-          if (frame !== null) {
-            cancelAnimationFrame(frame);
-            frame = null;
-          }
-          flushChunks();
-        };
-
-        // A box, not a bare `let`: the assignment happens inside a callback, and TS
-        // won't see it otherwise.
-        const settled: { doc: DocumentMeta | null } = { doc: null };
-
-        const onEvent = (event: IngestEvent) => {
-          switch (event.type) {
-            case 'stage':
-              flushNow();
-              patchUpload(task.id, (t) => ({
-                ...t,
-                stage: event.stage,
-                label: event.label,
-                nChars: event.n_chars ?? t.nChars,
-              }));
-              break;
-            case 'chunk':
-              pendingChunks.push({
-                index: event.index,
-                nChars: event.n_chars,
-                preview: event.preview,
-              });
-              if (frame === null) frame = requestAnimationFrame(flushChunks);
-              break;
-            case 'chunked':
-              flushNow();
-              patchUpload(task.id, (t) => ({
-                ...t,
-                stage: 'chunked',
-                label: event.label,
-                nChunks: event.n_chunks,
-                nChunksSeen: event.n_chunks,
-              }));
-              break;
-            case 'embedding':
-              patchUpload(task.id, (t) => ({
-                ...t,
-                embed: {
-                  done: event.done,
-                  total: event.total,
-                  cached: event.cached,
-                  apiCalls: event.api_calls,
-                },
-              }));
-              break;
-            case 'done':
-              flushNow();
-              settled.doc = event.document;
-              break;
-            case 'error':
-              flushNow();
-              patchUpload(task.id, (t) => ({ ...t, error: event.detail }));
-              break;
-          }
-        };
-
-        try {
-          await streamUpload(file, onEvent);
-          const doc = settled.doc;
-          if (doc) {
-            setUploads((prev) => prev.filter((t) => t.id !== task.id));
-            setDocuments((prev) => [doc, ...prev.filter((d) => d.id !== doc.id)]);
-            if (doc.status === 'failed') {
-              pushToast(doc.error ?? `${doc.filename} could not be ingested.`);
-            }
-          } else {
-            // Stream closed without a verdict. Say so rather than pretending.
-            patchUpload(task.id, (t) =>
-              t.error
-                ? t
-                : { ...t, error: `Ingestion of ${file.name} ended before it finished.` },
-            );
-            void refreshDocuments();
-          }
-        } catch (err) {
-          flushNow();
-          const message =
-            err instanceof ApiError ? err.message : `${file.name} could not be uploaded.`;
-          patchUpload(task.id, (t) => ({ ...t, error: message }));
-        } finally {
-          void refreshStats();
-        }
-      }
+  const onIndexed = useCallback(
+    (doc: DocumentMeta) => {
+      setDocuments((prev) => [doc, ...prev.filter((d) => d.id !== doc.id)]);
+      void refreshStats();
     },
-    [patchUpload, pushToast, refreshDocuments, refreshStats],
+    [refreshStats],
   );
 
-  const dismissUpload = useCallback((id: string) => {
-    setUploads((prev) => prev.filter((t) => t.id !== id));
-  }, []);
+  const onUploadDirty = useCallback(() => {
+    void refreshDocuments();
+    void refreshStats();
+  }, [refreshDocuments, refreshStats]);
+
+  /**
+   * Dropping a file anywhere on the window opens the dialog with it already in
+   * hand — the shortest path there is from "I have a PDF" to "here is what it
+   * will cost". The dialog handles its own drops, so this stands down while it
+   * is open.
+   */
+  useEffect(() => {
+    const carriesFiles = (e: DragEvent) =>
+      Array.from(e.dataTransfer?.types ?? []).includes('Files');
+
+    const onDragOver = (e: DragEvent) => {
+      if (!carriesFiles(e)) return;
+      // Without this the browser navigates away to the dropped file.
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+      if (!upload) setDragging(true);
+    };
+
+    const onDragLeave = (e: DragEvent) => {
+      // relatedTarget is null only when the pointer has left the window itself.
+      if (e.relatedTarget === null) setDragging(false);
+    };
+
+    const onDrop = (e: DragEvent) => {
+      if (!carriesFiles(e)) return;
+      e.preventDefault();
+      setDragging(false);
+      if (upload) return; // the dialog is open and handles its own drop target
+      const file = firstFile(e.dataTransfer?.files ?? null);
+      if (!file) return;
+      // The dialog screens it and, if it is the wrong sort of file, says so in
+      // place — rather than a toast fired at something the reader just did.
+      openUpload(file);
+    };
+
+    window.addEventListener('dragover', onDragOver);
+    window.addEventListener('dragleave', onDragLeave);
+    window.addEventListener('drop', onDrop);
+    return () => {
+      window.removeEventListener('dragover', onDragOver);
+      window.removeEventListener('dragleave', onDragLeave);
+      window.removeEventListener('drop', onDrop);
+    };
+  }, [openUpload, upload]);
 
   const handleDelete = useCallback(
     async (id: number) => {
@@ -553,6 +473,10 @@ export default function App() {
   // while you are mid-sentence in a field.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // The upload dialog is modal: while it is open it owns the keyboard, and
+      // ⌘K must not clear the thread out from behind it.
+      if (upload) return;
+
       // Both the event target and the focused element are checked: a key
       // pressed inside the composer must never be read as a bare shortcut,
       // and `?` typed into a question is a question mark, not a command.
@@ -588,7 +512,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [busy, changeView, newChat, stop]);
+  }, [busy, changeView, newChat, stop, upload]);
 
   /* ── Inspector ────────────────────────────────────────────────────────── */
 
@@ -642,11 +566,9 @@ export default function App() {
               documents={documents}
               loading={docsLoading}
               error={docsError}
-              uploads={uploads}
               selectedIds={selected}
               activeDocumentId={inspector?.kind === 'chunks' ? inspector.documentId : null}
-              onFiles={(files) => void handleFiles(files)}
-              onDismissUpload={dismissUpload}
+              onAdd={() => openUpload()}
               onToggle={toggleDocument}
               onSelectAll={selectAll}
               onOpenDocument={openDocument}
@@ -708,6 +630,7 @@ export default function App() {
               onSend={ask}
               onStop={stop}
               onOpenDocument={openDocument}
+              onAddDocument={() => openUpload()}
               composerRef={composerRef}
             />
           )}
@@ -724,7 +647,44 @@ export default function App() {
       </AnimatePresence>
 
       <AnimatePresence>
+        {upload && (
+          <UploadDialog
+            key="upload"
+            initialFile={upload.file}
+            onClose={closeUpload}
+            onIndexed={onIndexed}
+            onDirty={onUploadDirty}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
         {shortcutsOpen && <ShortcutsDialog key="shortcuts" onClose={() => setShortcutsOpen(false)} />}
+      </AnimatePresence>
+
+      {/* Dragging a file over the window. A ring rather than a full-screen
+          takeover: the app stays readable, and the only thing that changes is
+          that the window is now obviously a target. */}
+      <AnimatePresence>
+        {dragging && !upload && (
+          <motion.div
+            key="dropzone"
+            aria-hidden="true"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: reduce ? 0.001 : 0.12 }}
+            className="pointer-events-none fixed inset-0 z-50 flex items-end justify-center
+                       border-[3px] border-signal/70 bg-signal/[0.05] pb-40"
+          >
+            <span
+              className="rounded-full border border-signal/40 bg-ink-850 px-4 py-2 text-[13px]
+                         font-medium text-paper shadow-panel"
+            >
+              Drop to see what indexing it costs
+            </span>
+          </motion.div>
+        )}
       </AnimatePresence>
 
       <Toasts toasts={toasts} onDismiss={dismissToast} />

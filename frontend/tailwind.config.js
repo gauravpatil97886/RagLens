@@ -111,12 +111,21 @@ export default {
           '0%': { backgroundColor: 'rgb(var(--signal) / 0.20)' },
           '100%': { backgroundColor: 'rgb(var(--signal) / 0)' },
         },
+        // One bar of the live chunk histogram, growing up from the baseline as
+        // its frame arrives. A CSS animation rather than a motion component:
+        // a long document is hundreds of these, and they must not re-animate
+        // every time the list around them re-renders.
+        raise: {
+          '0%': { transform: 'scaleY(0)', opacity: '0' },
+          '100%': { transform: 'scaleY(1)', opacity: '1' },
+        },
       },
       animation: {
         caret: 'caret 1.1s steps(1) infinite',
         sweep: 'sweep 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite',
         breathe: 'breathe 1.8s ease-in-out infinite',
         land: 'land 0.75s cubic-bezier(0.16, 1, 0.3, 1) 1',
+        raise: 'raise 0.32s cubic-bezier(0.16, 1, 0.3, 1) 1',
       },
     },
   },
