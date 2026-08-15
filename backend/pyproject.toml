@@ -1,5 +1,5 @@
 [project]
-name = "rag-demo-backend"
+name = "raglens-backend"
 version = "0.1.0"
 description = "Teaching-quality RAG backend: Gemini embeddings + pgvector + a two-layer semantic cache."
 requires-python = ">=3.12"

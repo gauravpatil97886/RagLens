@@ -10,7 +10,7 @@ POSTGRES_USER ?= rag
 POSTGRES_DB   ?= rag
 POSTGRES_PORT ?= 5433
 DB_SERVICE    := db
-DB_CONTAINER  := rag-demo-db
+DB_CONTAINER  := raglens-db
 
 COMPOSE := docker compose
 
@@ -36,7 +36,7 @@ down: ## Stop containers, KEEP data (safe default)
 	$(COMPOSE) down
 
 nuke: ## DESTRUCTIVE: stop containers and delete the Postgres volume (all ingested docs + cache gone)
-	@echo "This deletes the rag_demo_pgdata volume. All documents, chunks and cache entries will be lost."
+	@echo "This deletes the raglens_pgdata volume. All documents, chunks and cache entries will be lost."
 	@printf "Type 'yes' to continue: "; \
 	read confirm; \
 	if [ "$$confirm" = "yes" ]; then $(COMPOSE) down -v; else echo "Aborted."; fi
