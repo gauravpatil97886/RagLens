@@ -7,10 +7,14 @@ import { formatPct } from '../lib/format';
 import { Mark } from './Mark';
 import ThemeToggle from './ThemeToggle';
 
-const NAV: { id: View; label: string; hint: string; Icon: typeof Sparkles }[] = [
-  { id: 'ask', label: 'Ask', hint: 'Ask a question against your documents', Icon: Sparkles },
-  { id: 'signals', label: 'Signals', hint: 'Calls, tokens, latency and cost', Icon: Activity },
+// Ask is the product; the other three are the lens you look at it through — which is
+// what the app is named after. The divider after Ask says that, so a rail that grew from
+// three items to four still reads as two ideas rather than a list of four.
+const NAV: { id: View; label: string; hint: string; Icon: typeof Sparkles; lead?: boolean }[] = [
+  { id: 'ask', label: 'Ask', hint: 'Ask a question against your documents', Icon: Sparkles, lead: true },
   { id: 'pipeline', label: 'Pipeline', hint: 'How ingest and query actually work', Icon: Route },
+  { id: 'signals', label: 'Signals', hint: 'How it is doing right now', Icon: Activity },
+  { id: 'infra', label: 'Infra', hint: 'The database, the vectors and what each chat cost', Icon: Database },
 ];
 
 function HealthDot({ health, unreachable }: { health: Health | null; unreachable: boolean }) {
@@ -113,10 +117,13 @@ export default function Sidebar({
 
       <nav className="px-3 pt-3" aria-label="Views">
         <ul className="space-y-0.5">
-          {NAV.map(({ id, label, hint, Icon }) => {
+          {NAV.map(({ id, label, hint, Icon, lead }, i) => {
             const active = id === view;
+            // A hairline after Ask, not before every group: one divider is a grouping,
+            // two would be a menu.
+            const divide = lead && i < NAV.length - 1;
             return (
-              <li key={id}>
+              <li key={id} className={divide ? 'mb-2 border-b border-line/60 pb-2' : undefined}>
                 <button
                   type="button"
                   onClick={() => onChangeView(id)}

@@ -25,6 +25,7 @@ import type { ComposerHandle } from './components/Composer';
 import ChunkViewer from './components/ChunkViewer';
 import CorpusRail from './components/CorpusRail';
 import Dashboard from './components/Dashboard';
+import InfraShell from './components/InfraShell';
 import PipelineView from './components/PipelineView';
 import ShortcutsDialog from './components/ShortcutsDialog';
 import Sidebar from './components/Sidebar';
@@ -35,11 +36,15 @@ import { firstFile } from './lib/upload';
 
 type Inspector = { kind: 'chunks'; documentId: number } | { kind: 'cache' } | null;
 
-const VIEWS: View[] = ['ask', 'signals', 'pipeline'];
+const VIEWS: View[] = ['ask', 'signals', 'pipeline', 'infra'];
 
-/** The view lives in the URL hash so a reload — and a shared link — lands back here. */
+/**
+ * The view lives in the URL hash so a reload — and a shared link — lands back here.
+ * Only the first segment names the view: `#/infra/costing` is still the infra view, and
+ * the section after it belongs to InfraShell.
+ */
 function viewFromHash(): View {
-  const candidate = window.location.hash.replace(/^#\/?/, '') as View;
+  const candidate = window.location.hash.replace(/^#\/?/, '').split('/')[0] as View;
   return VIEWS.includes(candidate) ? candidate : 'ask';
 }
 
@@ -222,6 +227,17 @@ export default function App() {
     void refreshDocuments();
     void refreshStats();
   }, [refreshDocuments, refreshStats]);
+
+  /**
+   * The reader was told this page is already in the corpus and chose not to
+   * make a second copy. Put the one that exists in scope and open it, so
+   * declining to spend still ends somewhere useful.
+   */
+  const useExistingDocument = useCallback((documentId: number) => {
+    setSelected((prev) => new Set(prev).add(documentId));
+    setInspector({ kind: 'chunks', documentId });
+    setRailOpen(false);
+  }, []);
 
   /**
    * Dropping a file anywhere on the window opens the dialog with it already in
@@ -615,6 +631,8 @@ export default function App() {
         >
           {view === 'signals' && <Dashboard />}
 
+          {view === 'infra' && <InfraShell />}
+
           {view === 'pipeline' && (
             <PipelineView documents={documents} onOpenDocument={openDocument} />
           )}
@@ -654,6 +672,7 @@ export default function App() {
             onClose={closeUpload}
             onIndexed={onIndexed}
             onDirty={onUploadDirty}
+            onUseExisting={useExistingDocument}
           />
         )}
       </AnimatePresence>

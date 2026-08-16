@@ -118,6 +118,161 @@ row and any chunks written so far are removed, so an abandoned upload never leav
 half-indexed document behind. Cancelling cannot un-spend embedding calls already made —
 but those vectors stay in `embedding_cache`, so re-uploading the same file is cheap.
 
+---
+
+# Links — ingest a web page by URL
+
+A pasted URL becomes an ordinary **document**. Everything downstream — chunks, vectors,
+retrieval, citations, the cache, deletion — is unchanged. Only the way the text arrives
+is different.
+
+## The document object gains four fields
+
+Every document object everywhere (upload, list, stream `done`) now also carries:
+
+```json
+{
+  "source_type": "file",          // "file" | "url"
+  "source_url": null,             // the final URL after redirects, or null for files
+  "title": null,                  // article title for URLs; null for files
+  "site_name": null               // e.g. "martinfowler.com"; null for files
+}
+```
+For a URL document, `filename` is the article title (trimmed to 120 chars), falling back
+to the last path segment, falling back to the host. The corpus rail keeps working with no
+changes. `mime_type` is `text/html`. `size_bytes` is the number of bytes fetched.
+
+## `POST /api/documents/url/preflight` — fetch and quote, WITHOUT spending anything
+
+```json
+{ "url": "https://martinfowler.com/articles/patterns-of-distributed-systems/" }
+```
+
+Fetches and scrapes the page, then reports what indexing it *would* cost.
+**Makes zero Gemini API calls. Writes nothing to the database.**
+
+**200 Response** — the file preflight object, plus `article` and `existing`:
+```json
+{
+  "url": "https://martinfowler.com/articles/...",
+  "final_url": "https://martinfowler.com/articles/...",
+  "site_name": "martinfowler.com",
+  "mime_type": "text/html",
+  "size_bytes": 148211,
+  "fetch_ms": 412,
+  "n_chars": 24310,
+  "n_chunks": 23,
+  "chunk_chars": { "min": 814, "mean": 1112, "max": 1198 },
+  "preview_chunks": [ { "index": 0, "n_chars": 894, "preview": "first ~160 chars…" } ],
+  "article": {
+    "title": "Patterns of Distributed Systems",
+    "author": "Unmesh Joshi",
+    "published": "2023-08-08",
+    "reading_minutes": 12,
+    "n_words": 4180,
+    "excerpt": "first ~320 characters of the real article text…"
+  },
+  "embedding": {
+    "already_cached": 23, "to_embed": 0, "api_calls_needed": 0,
+    "estimated_tokens": 0, "tokens_estimated": true
+  },
+  "existing": {
+    "document_id": 21,
+    "filename": "Patterns of Distributed Systems",
+    "created_at": "2026-08-15T10:02:00Z",
+    "kind": "url",
+    "changed": false
+  },
+  "warnings": ["Someone already indexed this link. Indexing it again costs 0 API calls."]
+}
+```
+
+`article.excerpt` is the reader's proof that scraping worked — it must be real body text,
+never nav or cookie-banner boilerplate.
+
+`existing` is `null` when the page is new. Otherwise:
+- `kind: "url"` — the same normalised URL is already in the corpus.
+- `kind: "content"` — a *different* URL produced byte-identical text (same article
+  mirrored, or `?utm_source` noise that normalisation did not catch).
+- `changed: true` — the URL matches but the page text has changed since it was indexed.
+  The UI should offer "re-index" rather than "already done".
+
+**URL normalisation** (used for the `kind: "url"` match): lowercase scheme and host, drop
+`www.`, drop the fragment, drop tracking params (`utm_*`, `gclid`, `fbclid`, `ref`,
+`ref_src`, `mc_cid`, `mc_eid`), sort the remaining query params, strip a trailing slash.
+Stored in `documents.source_url_norm`.
+
+**Errors** — all `400` with `{"detail": "..."}` in plain English:
+
+| Situation | `detail` |
+|---|---|
+| Not http/https | `Only http and https links can be fetched.` |
+| Host resolves to a private/loopback/link-local address | `That link points to a private network address, so it will not be fetched.` |
+| DNS failure | `That domain could not be found.` |
+| Timeout (15s) | `That site took too long to respond.` |
+| Non-2xx | `The site answered with 403 Forbidden.` |
+| Wrong content type | `That link is a PDF, not a web page — download it and upload the file instead.` |
+| Body over 10 MB | `That page is larger than the 10 MB limit.` |
+| Too little text extracted (< 200 chars) | `Only 84 characters of article text could be found — the page may be mostly JavaScript.` |
+
+## `POST /api/documents/url/stream` — fetch, scrape, index; streamed
+
+Same JSON body. Rejections above are still ordinary `400`s — the stream opens only once
+the page has been fetched and accepted. Responds `200 text/event-stream`.
+
+The frames are the file ingest frames with **three new ones at the front** and one new
+frame after extraction:
+
+```
+data: {"type":"started","document_id":21}
+data: {"type":"stage","stage":"resolving","host":"martinfowler.com","label":"Checking martinfowler.com"}
+data: {"type":"stage","stage":"fetching","label":"Fetching the page"}
+data: {"type":"stage","stage":"fetched","status":200,"bytes":148211,"content_type":"text/html","final_url":"https://…","from_cache":true,"fetch_ms":0,"label":"148 KB of HTML"}
+data: {"type":"stage","stage":"extracting","label":"Finding the article text"}
+data: {"type":"article","title":"Patterns of Distributed Systems","site_name":"martinfowler.com","author":"Unmesh Joshi","published":"2023-08-08","n_words":4180,"reading_minutes":12,"excerpt":"first ~320 characters…"}
+data: {"type":"stage","stage":"extracted","n_chars":24310,"label":"Extracted 24,310 characters"}
+… from here identical to the file path: chunking → chunk* → chunked → embedding* → indexing → done
+```
+
+Full order: `resolving` → `fetching` → `fetched` → `extracting` → `article` →
+`extracted` → `chunking` → `chunk`* → `chunked` → `embedding` → `embedding`* →
+`indexing` → `done`.
+
+`stage` is now one of
+`resolving | fetching | fetched | extracting | chunking | embedding | indexing`.
+
+The `article` frame is emitted exactly once, immediately before `extracted`. It is what
+the UI shows as "here is what I found" so the reader can confirm the right thing was
+scraped before any embedding happens.
+
+**`from_cache` on the `fetched` frame.** A successful preflight puts the fetched page body
+in a small in-process cache (keyed by normalised URL, TTL 5 minutes, capped at 32 entries).
+When the reader then presses Index, the stream reuses that body instead of hitting the
+site a second time — so pressing Index does not re-download the page, and the site is not
+hit twice for one action. `from_cache: true` says that happened; `fetch_ms: 0` proves it.
+This cache holds page bytes only. It is not the embedding cache and not the answer cache.
+
+**Cancelling** works exactly as for files: `started` is the first frame, abort the fetch
+and `DELETE /api/documents/{id}`, and the server also cleans up a partial row on
+disconnect.
+
+**Sharing embeddings between readers.** Two people pasting the same link do not pay twice.
+This is not special-cased: chunk text is identical, so `embedding_cache` (keyed by chunk
+SHA-256) already returns every vector, and the run reports `api_calls: 0`. The
+`existing` block in preflight is the *user-facing* half of the same fact.
+
+**Fetch limits** — 15s timeout, max 5 redirects, max 10 MB body, only
+`text/html`, `application/xhtml+xml`, `text/plain`, `text/markdown`. A descriptive
+`User-Agent` is sent. Private, loopback, link-local, multicast and reserved IP ranges are
+refused *after* DNS resolution, and re-checked on every redirect hop.
+
+**Fetched text is untrusted.** A web page can contain text written to manipulate a model.
+Scraped content is data to be quoted, never instructions to follow — the system
+instruction in `rag.py` states this, and the frontend must render extracted text as plain
+text, never as HTML.
+
+---
+
 ## `GET /api/documents` — list
 ```json
 { "documents": [ <document object as above>, ... ] }
@@ -408,3 +563,352 @@ of hiding.
 - `vector_bytes` / `embedding_cache_vector_bytes` are `sum(pg_column_size(embedding))`,
   i.e. what the vectors really occupy on disk, not `dim * 4` arithmetic.
 - `retrieval.index.*` is `null` if no HNSW/IVFFlat index exists — treat it as optional.
+
+---
+
+# Infra — look inside the database
+
+A fourth view, `#/infra`, alongside `ask | signals | pipeline`. It answers four questions
+a person learning RAG actually asks:
+
+1. How much data is in the vector database, and what does it cost on disk?
+2. What does a stored vector *actually look like*?
+3. Where does cached data live, and which cache is which?
+4. Is the vector index being used, or is Postgres scanning the table?
+
+**Read-only by design.** There is no endpoint that accepts SQL. Table access is limited to
+a fixed whitelist:
+`documents | chunks | embedding_cache | query_cache | cache_stats | api_calls`.
+Any other name is `400 {"detail": "Unknown table."}`. Nothing here mutates anything.
+
+## `GET /api/infra` — the overview, one call
+
+```json
+{
+  "server": {
+    "postgres_version": "17.4",
+    "pgvector_version": "0.8.0",
+    "database": "rag",
+    "host": "localhost",
+    "port": 5433,
+    "database_bytes": 12582912,
+    "database_pretty": "12 MB",
+    "connections": { "active": 2, "max": 100 }
+  },
+  "vectors": {
+    "dimensions": 768,
+    "stored": 22,
+    "bytes_per_vector": 3076,
+    "vector_bytes": 67672,
+    "text_bytes": 22150,
+    "expansion_ratio": 3.05,
+    "l2_norm": { "min": 1.0, "mean": 1.0, "max": 1.0 },
+    "index_method": "hnsw",
+    "index_ops": "vector_cosine_ops",
+    "index_bytes": 327680,
+    "distance_operator": "<=>"
+  },
+  "tables": [
+    {
+      "name": "chunks",
+      "role": "The text pieces and their vectors. This is what a question is searched against.",
+      "rows": 22,
+      "total_bytes": 655360, "total_pretty": "640 kB",
+      "heap_pretty": "216 kB", "index_pretty": "352 kB", "toast_pretty": "72 kB",
+      "columns": [
+        { "name": "embedding", "type": "vector(768)", "nullable": false, "is_vector": true }
+      ],
+      "indexes": [
+        { "name": "chunks_embedding_hnsw", "method": "hnsw",
+          "size_pretty": "320 kB", "is_vector": true,
+          "definition": "CREATE INDEX ... USING hnsw (embedding vector_cosine_ops)" }
+      ]
+    }
+  ],
+  "caches": [
+    { "layer": "embedding_cache", "where": "postgres", "what": "One vector per unique chunk of text, keyed by SHA-256. Stops the same text being embedded twice.",
+      "rows": 45, "size_pretty": "864 kB", "key": "content_sha256 + task_type + dim", "ttl": null },
+    { "layer": "query_cache", "where": "postgres", "what": "Past questions, their vectors and their answers. Layer 1 matches the text exactly, layer 2 matches by meaning.",
+      "rows": 12, "size_pretty": "352 kB", "key": "question_norm + scope_key", "ttl": "168h" },
+    { "layer": "page_fetch_cache", "where": "memory", "what": "Fetched page bytes, so pressing Index does not download the page a second time.",
+      "rows": 1, "size_pretty": "148 kB", "key": "normalised URL", "ttl": "300s" }
+  ],
+  "counters": { "exact_hits": 24, "semantic_hits": 5, "misses": 27 }
+}
+```
+
+`caches[].where` is `"postgres" | "memory"` — the point being that not every cache is a
+table. `pgvector_version` is read from `pg_extension`. Sizes come from
+`pg_total_relation_size` / `pg_indexes_size`, never estimated.
+
+## `GET /api/infra/table/{name}?limit=25&offset=0` — browse real rows
+
+`limit` max 100, default 25.
+
+```json
+{
+  "table": "chunks",
+  "total": 22,
+  "limit": 25,
+  "offset": 0,
+  "columns": [ { "name": "id", "type": "bigint" }, { "name": "embedding", "type": "vector(768)" } ],
+  "rows": [
+    {
+      "id": 167,
+      "content": "…the full text…",
+      "embedding": {
+        "__vector__": true,
+        "dims": 768,
+        "bytes": 3076,
+        "l2_norm": 1.0,
+        "head": [-0.017299, 0.051937, 0.014355, -0.088047, 0.007045, 0.019605, 0.034107, -0.001132]
+      }
+    }
+  ]
+}
+```
+
+**Vector columns are never returned in full here** — 768 floats per row would be megabytes
+of JSON for a page of results. They come back as the object above: `head` is the first 8
+values, and `dims`/`bytes`/`l2_norm` tell the rest of the story. Use the endpoint below to
+get one whole vector.
+
+Other columns are returned as-is. `bytea` and any column over 4 KB is truncated with a
+trailing `"…"` and a sibling `"<name>__truncated": true`. Timestamps are ISO-8601 `Z`.
+
+## `GET /api/infra/vector/{chunk_id}` — one whole vector, plus its neighbours
+
+The endpoint that answers "can I actually see the data?".
+
+```json
+{
+  "chunk_id": 167,
+  "document_id": 18,
+  "filename": "acme-employee-handbook.md",
+  "chunk_index": 3,
+  "content": "…the text this vector was made from…",
+  "dims": 768,
+  "bytes": 3076,
+  "l2_norm": 1.0,
+  "stats": { "min": -0.1204, "max": 0.1187, "mean": 0.0001, "abs_mean": 0.0287 },
+  "values": [ -0.017299635, 0.05193721, "… all 768 floats …" ],
+  "neighbours": [
+    { "chunk_id": 168, "filename": "acme-employee-handbook.md", "chunk_index": 4,
+      "similarity": 0.7412, "preview": "first ~90 chars…" }
+  ]
+}
+```
+`neighbours` is the 5 nearest other chunks by cosine distance — the same `<=>` query
+retrieval uses, run against a stored vector instead of a question. It makes "near in
+768-dimensional space" concrete: neighbours of a leave-policy chunk are other
+leave-policy chunks. `404` if the chunk does not exist.
+
+## `GET /api/infra/explain` — is the index actually used?
+
+Runs the real retrieval query through `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` using a
+stored vector as the probe, once as the planner chooses and once with
+`SET LOCAL enable_seqscan = off`.
+
+```json
+{
+  "query": "SELECT … ORDER BY c.embedding <=> $1 LIMIT 5",
+  "rows_in_table": 22,
+  "chosen": { "plan": "Seq Scan on chunks", "uses_index": false, "ms": 0.185 },
+  "forced_index": { "plan": "Index Scan using chunks_embedding_hnsw", "uses_index": true, "ms": 0.383 },
+  "verdict": "Postgres is choosing a sequential scan, and it is right: at 22 rows the HNSW index costs more to walk than the table costs to read. The index earns its place as the corpus grows.",
+  "note": "Retrieval takes about 0.2 ms either way. The model takes about 2000 ms. Search is not the bottleneck here."
+}
+```
+`verdict` and `note` are server-generated plain English — the UI renders them, it does not
+compose them, so the explanation can never contradict the numbers beside it.
+`SET LOCAL` is used inside a transaction that is rolled back, so nothing about the
+session's planner settings persists.
+
+## Frontend
+
+`View` becomes `'ask' | 'signals' | 'pipeline' | 'infra'`, and `VIEWS` in `App.tsx` gains
+`'infra'`. The nav label is **Infra**. Polls `GET /api/infra` on the same 6s cadence the
+dashboard uses; the table browser and vector viewer load on demand, not on a timer.
+
+---
+
+# Costing — every model call, and what each chat cost
+
+A sub-tab of **Infra**, at `#/infra/costing`.
+
+`Signals` and `Costing` are not duplicates. Signals is the *summary* — how is the system
+doing right now. Costing is the *ledger* — every individual call, and the ability to open
+one chat turn and see exactly what it spent. Summary vs. drill-down.
+
+## Traces: the missing link
+
+`api_calls` records one row per Gemini request, but a single question makes *several*
+requests (embed the question, then generate) and may make none at all (a cache hit). There
+is nothing tying them together, so "what did this chat cost?" is currently unanswerable.
+
+A **trace** is one user action. Every API call it causes carries its `trace_id`.
+This is the same idea Langfuse, Phoenix and LangSmith are built on, and the field names
+below follow the OpenTelemetry GenAI semantic conventions (`gen_ai.*`) so this data can be
+exported to any of them later without reshaping it.
+
+### Schema additions
+
+`api_calls` gains:
+- `trace_id text` — null for calls made before this feature existed
+- index on `trace_id`
+
+New table `traces`:
+
+| Column | Type | Meaning |
+|---|---|---|
+| `trace_id` | `text primary key` | uuid4, generated at the start of the action |
+| `kind` | `text` | `chat` \| `ingest` |
+| `label` | `text` | the question asked, or the filename/URL ingested |
+| `scope_key` | `text` | which documents were in scope (chat only) |
+| `cache_kind` | `text` | `miss` \| `exact` \| `semantic` (chat only) |
+| `cached` | `bool` | did this action avoid the model entirely |
+| `n_citations` | `int` | how many chunks were cited |
+| `model` | `text` | the model that actually answered, after fallbacks |
+| `api_calls` | `int` | requests actually sent |
+| `saved_calls` | `int` | requests the cache prevented |
+| `prompt_tokens` / `output_tokens` / `thinking_tokens` / `total_tokens` | `int` | |
+| `cost_usd` | `numeric(12,8)` | computed from the pricing settings |
+| `latency_ms` | `int` | wall clock for the whole action |
+| `timings` | `jsonb` | `{embed, cache_lookup, retrieve, generate, total}` |
+| `ok` | `bool` | |
+| `error` | `text` | |
+| `created_at` | `timestamptz` | |
+
+Writing a trace must never break a chat: wrap the write so a telemetry failure is logged
+and swallowed, never surfaced to the user.
+
+## `GET /api/costing/summary?window=24h`
+
+`window` is one of `1h | 24h | 7d | all`, default `24h`.
+
+```json
+{
+  "window": "24h",
+  "pricing": {
+    "chat_input_per_1m_usd": 1.50, "chat_output_per_1m_usd": 7.50,
+    "embed_input_per_1m_usd": 0.15, "usd_inr_rate": 95.24,
+    "tier": "free", "source": "https://ai.google.dev/gemini-api/docs/pricing",
+    "as_of": "2026-08-10"
+  },
+  "totals": {
+    "traces": 56, "api_calls": 97, "saved_calls": 70,
+    "prompt_tokens": 71204, "output_tokens": 8410, "thinking_tokens": 1152,
+    "total_tokens": 80766,
+    "cost_usd": 0.17421, "cost_inr": 16.59,
+    "saved_usd": 0.12044, "saved_inr": 11.47,
+    "would_have_cost_usd": 0.29465
+  },
+  "by_model": [
+    { "model": "gemini-flash-lite-latest", "calls": 28, "total_tokens": 41200,
+      "cost_usd": 0.0912, "avg_latency_ms": 1525, "failures": 0 }
+  ],
+  "by_kind": [
+    { "kind": "generate", "calls": 34, "saved": 28, "cost_usd": 0.1601 },
+    { "kind": "embed_query", "calls": 20, "saved": 32, "cost_usd": 0.0004 },
+    { "kind": "embed_document", "calls": 10, "saved": 0, "cost_usd": 0.0137 }
+  ],
+  "per_chat": { "median_cost_usd": 0.0031, "median_tokens": 1420, "median_latency_ms": 1557 },
+  "projection": {
+    "basis": "24h", "traces_per_day": 56,
+    "monthly_cost_usd": 5.23, "monthly_cost_inr": 498.10,
+    "monthly_without_cache_usd": 8.84,
+    "note": "You are on the free tier, so the real bill is zero. These are what the same traffic would cost at the listed paid rates."
+  }
+}
+```
+
+`cost_usd` is always **computed, never stored twice** — one pricing function, used by this
+endpoint and by the trace writer, so a pricing change cannot make two screens disagree.
+The free-tier caveat must be stated by the server, not invented by the UI.
+
+## `GET /api/costing/traces?limit=50&offset=0&kind=&cached=`
+
+`limit` max 200, default 50. `kind` filters `chat|ingest`. `cached` filters `true|false`.
+
+```json
+{
+  "total": 56, "limit": 50, "offset": 0,
+  "traces": [
+    {
+      "trace_id": "3f9c…", "kind": "chat",
+      "label": "How many days of casual leave do employees get?",
+      "cache_kind": "semantic", "cached": true,
+      "model": null, "api_calls": 0, "saved_calls": 1,
+      "total_tokens": 0, "cost_usd": 0.0, "latency_ms": 719,
+      "n_citations": 5, "ok": true, "created_at": "2026-08-15T18:22:04Z"
+    }
+  ]
+}
+```
+Newest first. A cached trace has `model: null` — no chat model was reached — and
+`saved_calls: 1`. Those two fields, not the cost, are what mark a cache hit.
+
+**Cost is always what was actually spent, cached or not.** An *exact* hit really is
+`api_calls: 0, cost_usd: 0.0`: it is a string lookup, no vector, no request. A *semantic*
+hit is `api_calls: 1` and roughly `cost_usd: 0.0000025`, because finding the match means
+embedding the question. Recording that as zero would stop the trace rows summing to
+`totals.cost_usd`, and a cost screen whose rows disagree with its own total cannot be
+trusted. The saving is still the headline, just an honest one: ~$0.0000025 against
+~$0.007 for a fresh answer, about 2,700x cheaper.
+
+The UI must therefore key the "from cache" treatment off `cached` / `cache_kind` /
+`saved_calls`, **never** off `cost_usd == 0`.
+
+## `GET /api/costing/trace/{trace_id}`
+
+One action, opened up.
+
+```json
+{
+  "trace": { "…the trace object above…" },
+  "timings": { "embed": 652, "cache_lookup": 11, "retrieve": 0, "generate": 0, "total": 719 },
+  "spans": [
+    { "id": 412, "kind": "embed_query", "model": "gemini-embedding-001",
+      "prompt_tokens": 12, "output_tokens": 0, "thinking_tokens": 0, "total_tokens": 12,
+      "tokens_estimated": true, "latency_ms": 652, "ok": true, "error": null,
+      "saved": false, "cost_usd": 0.0000018, "created_at": "…" }
+  ],
+  "waterfall": [
+    { "label": "embed", "start_ms": 0, "duration_ms": 652, "billable": true },
+    { "label": "cache lookup", "start_ms": 652, "duration_ms": 11, "billable": false },
+    { "label": "generate", "start_ms": 663, "duration_ms": 0, "billable": true,
+      "skipped": true, "skipped_reason": "semantic cache hit" }
+  ]
+}
+```
+`spans` are the `api_calls` rows for this trace, oldest first. `waterfall` is derived from
+`timings` server-side so the UI renders one bar per entry without doing arithmetic.
+A `skipped` entry is a step that did not run — drawn as an outline, not a filled bar.
+`404` if the trace is unknown.
+
+## Frontend
+
+Infra gains a sub-tab bar. `#/infra` opens **Vectors**; the others are
+`#/infra/tables`, `#/infra/caches`, `#/infra/plan`, `#/infra/costing`.
+
+---
+
+# Navigation — the information architecture
+
+With Ask, Pipeline, Signals, Infra and five Infra sub-tabs, a flat list stops working.
+The rule: **the left rail holds destinations, the page header holds sections within a
+destination.** Never nest a second level in the rail.
+
+| Rail item | Question it answers | Sections (in the page header) |
+|---|---|---|
+| **Ask** | Get me an answer | — |
+| **Pipeline** | How does this work? | — |
+| **Signals** | How is it doing right now? | — |
+| **Infra** | Where does the data live, and what did it cost? | Vectors · Tables · Caches · Query plan · Costing |
+
+Ask is the product. The other three are the lens — the reason the app is called RAGLens.
+The rail should show that: Ask sits on its own, the other three group below a divider.
+
+Hash routes: `#/`, `#/pipeline`, `#/signals`, `#/infra[/tables|caches|plan|costing]`.
+An unknown hash falls back to `#/`. Back/forward must move between sub-tabs too, so the
+sub-tab is part of the hash, not component state.
