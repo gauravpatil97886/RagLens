@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { PanelLeft } from 'lucide-react';
 import {
   ApiError,
   deleteDocument,
@@ -24,27 +23,54 @@ import ChatPanel from './components/ChatPanel';
 import type { ComposerHandle } from './components/Composer';
 import ChunkViewer from './components/ChunkViewer';
 import CorpusRail from './components/CorpusRail';
+import CostingView from './components/CostingView';
 import Dashboard from './components/Dashboard';
-import InfraShell from './components/InfraShell';
+import InfraView from './components/InfraView';
 import PipelineView from './components/PipelineView';
 import ShortcutsDialog from './components/ShortcutsDialog';
 import Sidebar from './components/Sidebar';
 import Toasts, { type Toast } from './components/Toasts';
+import TopBar from './components/TopBar';
 import UploadDialog from './components/UploadDialog';
 import { useTheme } from './lib/theme';
 import { firstFile } from './lib/upload';
 
 type Inspector = { kind: 'chunks'; documentId: number } | { kind: 'cache' } | null;
 
-const VIEWS: View[] = ['ask', 'signals', 'pipeline', 'infra'];
+const VIEWS: View[] = ['ask', 'pipeline', 'signals', 'database', 'costing'];
+
+/**
+ * The two paths Infra used to own, and where each of them goes now.
+ *
+ * A literal lookup rather than an object keyed by the hash: the hash is whatever
+ * the address bar happens to contain, and `#/constructor` against a plain object
+ * finds a match that was never put there.
+ */
+function legacyView(path: string): View | null {
+  if (path === 'infra') return 'database';
+  if (path === 'infra/costing') return 'costing';
+  return null;
+}
 
 /**
  * The view lives in the URL hash so a reload — and a shared link — lands back here.
- * Only the first segment names the view: `#/infra/costing` is still the infra view, and
- * the section after it belongs to InfraShell.
+ * Only the first segment names the view; there are no sections below one any more.
+ *
+ * An old `#/infra` link still has to land somewhere sensible, so it is translated
+ * *and* the hash is rewritten in place, rather than leaving the address bar showing
+ * a path the app no longer has. `history.replaceState` and not `location.hash = …`:
+ * assigning pushes a history entry, and Back would then walk you back into the dead
+ * path and straight forward again. Rewriting here rather than in an effect means the
+ * one function covers both the first read and every hashchange after it.
  */
 function viewFromHash(): View {
-  const candidate = window.location.hash.replace(/^#\/?/, '').split('/')[0] as View;
+  const path = window.location.hash.replace(/^#\/?/, '').replace(/\/$/, '');
+  const legacy = legacyView(path);
+  if (legacy) {
+    window.history.replaceState(null, '', `#/${legacy}`);
+    return legacy;
+  }
+  const candidate = path.split('/')[0] as View;
   return VIEWS.includes(candidate) ? candidate : 'ask';
 }
 
@@ -545,115 +571,120 @@ export default function App() {
   /* ── Render ───────────────────────────────────────────────────────────── */
 
   return (
-    <div className="flex h-full bg-ink-900">
-      {/* Backdrop for the sidebar, below the lg breakpoint only. */}
-      {railOpen && (
-        <button
-          type="button"
-          aria-label="Close the menu"
-          onClick={() => setRailOpen(false)}
-          className="fixed inset-0 z-30 bg-scrim/60 lg:hidden"
-        />
-      )}
+    <div className="flex h-full flex-col bg-ink-900">
+      <TopBar
+        view={view}
+        onChangeView={changeView}
+        stats={stats}
+        health={health}
+        unreachable={unreachable}
+        onOpenCache={() => setInspector({ kind: 'cache' })}
+        onOpenShortcuts={() => setShortcutsOpen(true)}
+        onOpenRail={() => setRailOpen(true)}
+        theme={theme.choice}
+        onChooseTheme={theme.choose}
+      />
 
-      <aside
-        className={[
-          'fixed inset-y-0 left-0 z-40 w-[17rem] transition-transform duration-200 ease-out',
-          'lg:static lg:z-auto lg:shrink-0 lg:translate-x-0 xl:w-[17.5rem]',
-          railOpen ? 'translate-x-0' : '-translate-x-full',
-        ].join(' ')}
-      >
-        <Sidebar
-          view={view}
-          onChangeView={changeView}
-          stats={stats}
-          health={health}
-          unreachable={unreachable}
-          onOpenCache={() => setInspector({ kind: 'cache' })}
-          onNewChat={newChat}
-          canNewChat={turns.length > 0}
-          onOpenShortcuts={() => setShortcutsOpen(true)}
-          theme={theme.choice}
-          onChooseTheme={theme.choose}
-          onClose={() => setRailOpen(false)}
-        >
-          {view === 'ask' && (
-            <CorpusRail
-              documents={documents}
-              loading={docsLoading}
-              error={docsError}
-              selectedIds={selected}
-              activeDocumentId={inspector?.kind === 'chunks' ? inspector.documentId : null}
-              onAdd={() => openUpload()}
-              onToggle={toggleDocument}
-              onSelectAll={selectAll}
-              onOpenDocument={openDocument}
-              onDelete={(id) => void handleDelete(id)}
-              onRetry={() => {
-                setDocsLoading(true);
-                void refreshDocuments();
-              }}
-            />
-          )}
-        </Sidebar>
-      </aside>
+      {/* The work, below the bar. `min-h-0` here is what lets every scroll
+          container further down actually scroll instead of growing the page. */}
+      <div className="flex min-h-0 flex-1">
+        {/* Backdrop for the sidebar, below the lg breakpoint only. */}
+        {railOpen && view === 'ask' && (
+          <button
+            type="button"
+            aria-label="Close the corpus"
+            onClick={() => setRailOpen(false)}
+            className="fixed inset-0 z-30 bg-scrim/60 lg:hidden"
+          />
+        )}
 
-      {/* The only chrome the conversation gets on a narrow screen. */}
-      <button
-        type="button"
-        onClick={() => setRailOpen(true)}
-        aria-label="Open the menu"
-        className="fixed left-3 top-3 z-20 flex h-9 w-9 items-center justify-center rounded-xl
-                   border border-line bg-ink-850 text-paper-dim shadow-lift
-                   transition-colors hover:text-paper lg:hidden"
-      >
-        <PanelLeft size={16} />
-      </button>
+        {/* The rail is the Ask workspace, so it exists on Ask and nowhere else —
+            Database and Costing are wide tables and were being squeezed by 17rem
+            of chrome that told them nothing. It mounts and unmounts plainly rather
+            than joining the crossfade below: a sidebar that fades in beside a
+            fading page reads as two things happening, and the drawer transform it
+            already owns would fight the opacity. */}
+        {view === 'ask' && (
+          <aside
+            className={[
+              'fixed inset-y-0 left-0 z-40 w-[17rem] transition-transform duration-200 ease-out',
+              'lg:static lg:z-auto lg:shrink-0 lg:translate-x-0 xl:w-[17.5rem]',
+              railOpen ? 'translate-x-0' : '-translate-x-full',
+            ].join(' ')}
+          >
+            <Sidebar
+              onNewChat={newChat}
+              canNewChat={turns.length > 0}
+              onClose={() => setRailOpen(false)}
+            >
+              <CorpusRail
+                documents={documents}
+                loading={docsLoading}
+                error={docsError}
+                selectedIds={selected}
+                activeDocumentId={inspector?.kind === 'chunks' ? inspector.documentId : null}
+                stats={stats}
+                onAdd={() => openUpload()}
+                onToggle={toggleDocument}
+                onSelectAll={selectAll}
+                onOpenDocument={openDocument}
+                onDelete={(id) => void handleDelete(id)}
+                onRetry={() => {
+                  setDocsLoading(true);
+                  void refreshDocuments();
+                }}
+              />
+            </Sidebar>
+          </aside>
+        )}
 
-      {/* One view at a time, and the swap is a short crossfade rather than a cut:
-          the sidebar stays put while the thing beside it is exchanged. Views are
-          unmounted rather than hidden — a display:none scroll container loses its
-          position, and coming back to the chat should land on the latest answer.
-          Every piece of chat state — turns, uploads, the in-flight stream — lives
-          up here in App, so nothing is lost. */}
-      <AnimatePresence mode="wait" initial={false}>
-        <motion.div
-          key={view}
-          className="relative flex min-h-0 min-w-0 flex-1 flex-col"
-          initial={{ opacity: 0, y: reduce ? 0 : 5 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{
-            opacity: 0,
-            y: reduce ? 0 : -3,
-            transition: reduce ? { duration: 0.001 } : { duration: 0.11, ease: 'easeIn' },
-          }}
-          transition={reduce ? { duration: 0.001 } : { duration: 0.19, ease: [0.16, 1, 0.3, 1] }}
-        >
-          {view === 'signals' && <Dashboard />}
+        {/* One view at a time, and the swap is a short crossfade rather than a cut:
+            the top bar stays put while the thing under it is exchanged. Views are
+            unmounted rather than hidden — a display:none scroll container loses its
+            position, and coming back to the chat should land on the latest answer.
+            Every piece of chat state — turns, uploads, the in-flight stream — lives
+            up here in App, so nothing is lost. */}
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.div
+            key={view}
+            className="relative flex min-h-0 min-w-0 flex-1 flex-col"
+            initial={{ opacity: 0, y: reduce ? 0 : 5 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{
+              opacity: 0,
+              y: reduce ? 0 : -3,
+              transition: reduce ? { duration: 0.001 } : { duration: 0.11, ease: 'easeIn' },
+            }}
+            transition={reduce ? { duration: 0.001 } : { duration: 0.19, ease: [0.16, 1, 0.3, 1] }}
+          >
+            {view === 'signals' && <Dashboard />}
 
-          {view === 'infra' && <InfraShell />}
+            {view === 'database' && <InfraView />}
 
-          {view === 'pipeline' && (
-            <PipelineView documents={documents} onOpenDocument={openDocument} />
-          )}
+            {view === 'costing' && <CostingView />}
 
-          {view === 'ask' && (
-            <ChatPanel
-              turns={turns}
-              documents={documents}
-              stats={stats}
-              busy={busy}
-              canAsk={readyDocs.length > 0 && selected.size > 0}
-              scopeLabel={scopeLabel}
-              onSend={ask}
-              onStop={stop}
-              onOpenDocument={openDocument}
-              onAddDocument={() => openUpload()}
-              composerRef={composerRef}
-            />
-          )}
-        </motion.div>
-      </AnimatePresence>
+            {view === 'pipeline' && (
+              <PipelineView documents={documents} onOpenDocument={openDocument} />
+            )}
+
+            {view === 'ask' && (
+              <ChatPanel
+                turns={turns}
+                documents={documents}
+                stats={stats}
+                busy={busy}
+                canAsk={readyDocs.length > 0 && selected.size > 0}
+                scopeLabel={scopeLabel}
+                onSend={ask}
+                onStop={stop}
+                onOpenDocument={openDocument}
+                onAddDocument={() => openUpload()}
+                composerRef={composerRef}
+              />
+            )}
+          </motion.div>
+        </AnimatePresence>
+      </div>
 
       <AnimatePresence>
         {inspector?.kind === 'cache' && (

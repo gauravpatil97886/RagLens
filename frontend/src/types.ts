@@ -632,8 +632,14 @@ export interface Pipeline {
 
 /* ── Client-side view models ────────────────────────────────────────────── */
 
-/** The three top-level screens. Mirrored into the URL hash. */
-export type View = 'ask' | 'signals' | 'pipeline' | 'infra';
+/**
+ * The five top-level screens. Mirrored into the URL hash.
+ *
+ * `database` and `costing` were one `infra` destination with a segmented control
+ * inside it. They are siblings of the rest now — see the legacy hash mapping in
+ * App.tsx, which still answers to the links that shape left behind.
+ */
+export type View = 'ask' | 'pipeline' | 'signals' | 'database' | 'costing';
 
 export type Phase = 'embedding' | 'retrieving' | 'generating' | 'done' | 'error';
 

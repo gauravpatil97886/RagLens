@@ -8,6 +8,15 @@ const OPTIONS: Array<{ value: ThemeChoice; Icon: typeof Sun; label: string }> = 
   { value: 'dark', Icon: Moon, label: 'Dark' },
 ];
 
+/** What one click does, in compact mode. Three states, so it is a cycle. */
+const NEXT: Record<ThemeChoice, ThemeChoice> = {
+  light: 'dark',
+  dark: 'system',
+  system: 'light',
+};
+
+const ICON: Record<ThemeChoice, typeof Sun> = { light: Sun, dark: Moon, system: Monitor };
+
 /**
  * The theme control.
  *
@@ -15,15 +24,44 @@ const OPTIONS: Array<{ value: ThemeChoice; Icon: typeof Sun; label: string }> = 
  * choice and a two-state control has to hide it. The selected cell is a single
  * shared element that slides between positions, so the control reads as one
  * thing moving rather than three things blinking.
+ *
+ * `compact` is for the top bar. Three labelled cells made the theme the widest
+ * and loudest thing in a bar whose job is to say where you are, and at 1600px
+ * the labels were colliding with their own icons against the window edge. In
+ * compact mode it is one quiet icon button that cycles. The alternative — a
+ * dropdown — is a click and a menu to change one setting, and it would still
+ * need the same icon to say what the setting currently is.
  */
 export default function ThemeToggle({
   choice,
   onChoose,
+  compact = false,
 }: {
   choice: ThemeChoice;
   onChoose: (next: ThemeChoice) => void;
+  /** One cycling icon button instead of the segmented three. */
+  compact?: boolean;
 }) {
   const reduce = useReducedMotion() ?? false;
+
+  if (compact) {
+    const Icon = ICON[choice];
+    // Both halves of the sentence, because an icon alone cannot say what
+    // pressing it will do — and the state it shows is the one it is *in*.
+    const label = `Theme: ${choice} — click for ${NEXT[choice]}`;
+    return (
+      <button
+        type="button"
+        onClick={() => onChoose(NEXT[choice])}
+        title={label}
+        aria-label={label}
+        // The quiet tier of the top bar: a tool, not a destination.
+        className="btn-ghost px-2 text-paper-faint hover:text-paper-dim"
+      >
+        <Icon size={14} strokeWidth={2} />
+      </button>
+    );
+  }
 
   return (
     <div
