@@ -141,15 +141,26 @@ def _accept_upload(file: UploadFile) -> tuple[str, bytes]:
             f"Unsupported file type. Allowed: {', '.join(sorted(extract.ALLOWED_EXTENSIONS))}",
         )
 
+    def too_big(n_bytes: int) -> HTTPException:
+        """One wording for both size checks, so they cannot start disagreeing."""
+        return HTTPException(
+            413,
+            f"'{filename}' is {n_bytes / 1_048_576:.1f} MB; the limit is "
+            f"{settings.max_upload_bytes // 1_048_576} MB.",
+        )
+
+    # Starlette's multipart parser already counted the part while spooling it, so an
+    # oversized upload can be refused before it ever becomes a bytes object in this
+    # process. `size` is Optional in the UploadFile API — hence the len(data) check
+    # below, which stays as the belt to this brace rather than being replaced by it.
+    if file.size is not None and file.size > settings.max_upload_bytes:
+        raise too_big(file.size)
+
     data = file.file.read()  # sync route, so read the underlying spooled file directly
     if not data:
         raise HTTPException(400, f"'{filename}' is empty.")
     if len(data) > settings.max_upload_bytes:
-        raise HTTPException(
-            413,
-            f"'{filename}' is {len(data) / 1_048_576:.1f} MB; the limit is "
-            f"{settings.max_upload_bytes // 1_048_576} MB.",
-        )
+        raise too_big(len(data))
     return filename, data
 
 

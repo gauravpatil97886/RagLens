@@ -484,6 +484,7 @@ def pipeline() -> dict[str, Any]:
         },
         "limits": {
             "max_upload_bytes": settings.max_upload_bytes,
+            "max_chunks_per_document": settings.max_chunks_per_document,
             "allowed_extensions": sorted(_allowed_extensions()),
         },
     }

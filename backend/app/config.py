@@ -47,6 +47,15 @@ class Settings(BaseSettings):
 
     # --- Uploads ---
     max_upload_bytes: int = 20 * 1024 * 1024
+    # Bytes are the wrong lever for cost, which is why there are two limits and not one.
+    # 20 MB of text is roughly 20,970 chunks and 4,194 embed requests — a whole free-tier
+    # day and about a gigabyte of resident vectors, spent by one drag-and-drop. Chunks are
+    # what actually gets embedded, so chunks are what is capped. With CHUNK_SIZE 1200 and
+    # CHUNK_OVERLAP 200 each chunk advances ~1,000 new characters, so 500 chunks is
+    # ~500,000 characters — call it a 250-page book — and ~100 embed requests at 5 chunks
+    # per request. That sits comfortably above the 20-request "this will take a while"
+    # warning in rag.py, so the soft warning still gets to fire long before the hard stop.
+    max_chunks_per_document: int = 500
 
     # --- Fetching a pasted link ---
     # Deliberately tight. Someone else's server decides how long it takes and how much it
