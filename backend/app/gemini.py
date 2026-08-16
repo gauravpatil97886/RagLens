@@ -14,6 +14,7 @@ import logging
 import random
 import time
 from collections.abc import Callable, Generator, Iterator
+from contextvars import ContextVar
 from dataclasses import dataclass
 
 import numpy as np
@@ -47,6 +48,21 @@ KIND_GENERATE = "generate"
 _TASK_KINDS = {TASK_DOCUMENT: KIND_EMBED_DOCUMENT, TASK_QUERY: KIND_EMBED_QUERY}
 
 _client: genai.Client | None = None
+
+# The user action this request belongs to — see costing.py, which sets it.
+#
+# A ContextVar, not an argument. The alternative is threading a trace_id through
+# embed_query -> _embed -> _embed_api -> _api_call -> _record, and through generate and
+# generate_stream, so that six signatures carry a value only the last of them uses; a new
+# call site would then be one forgotten parameter away from an untraced call. The id is
+# genuinely *ambient* to the action, which is what a ContextVar is for. It is also the
+# only correct choice for this server: FastAPI runs each sync endpoint in a threadpool
+# worker with a COPY of the caller's context, so a plain global would be shared between
+# concurrent requests while this is not. The copy is also why costing.Trace.steps() has
+# to re-stamp the id before every step of a streaming response — each next() on a sync
+# generator gets a fresh copy of the context, so a value set once inside the generator
+# would not survive the first yield.
+current_trace_id: ContextVar[str | None] = ContextVar("current_trace_id", default=None)
 
 
 def get_client() -> genai.Client:
@@ -147,11 +163,13 @@ def _record(
                 """
                 INSERT INTO api_calls (kind, model, prompt_tokens, output_tokens,
                                        thinking_tokens, total_tokens, tokens_estimated,
-                                       latency_ms, n_items, ok, error, saved)
+                                       latency_ms, n_items, ok, error, saved, trace_id)
                 VALUES (%(kind)s, %(model)s, %(prompt)s, %(output)s, %(thinking)s,
-                        %(total)s, %(est)s, %(latency)s, %(n)s, %(ok)s, %(error)s, %(saved)s)
+                        %(total)s, %(est)s, %(latency)s, %(n)s, %(ok)s, %(error)s,
+                        %(saved)s, %(trace)s)
                 """,
                 {
+                    "trace": current_trace_id.get(),
                     "kind": kind,
                     "model": model,
                     "prompt": u.prompt,

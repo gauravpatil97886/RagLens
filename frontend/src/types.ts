@@ -17,8 +17,12 @@ export interface Health {
 
 export type DocumentStatus = 'pending' | 'processing' | 'ready' | 'failed';
 
+/** Where a document's text came from. A pasted link is an ordinary document. */
+export type DocumentSource = 'file' | 'url';
+
 export interface DocumentMeta {
   id: number;
+  /** For a URL document this is the article title, trimmed to 120 chars. */
   filename: string;
   mime_type: string;
   size_bytes: number;
@@ -30,6 +34,13 @@ export interface DocumentMeta {
   ingest_ms?: number;
   /** Present when status is 'failed'. */
   error?: string;
+  source_type: DocumentSource;
+  /** The final URL after redirects. Null for files. */
+  source_url: string | null;
+  /** Article title for URLs. Null for files. */
+  title: string | null;
+  /** e.g. "martinfowler.com". Null for files. */
+  site_name: string | null;
 }
 
 export interface DocumentListResponse {
@@ -82,6 +93,64 @@ export interface Preflight {
   preview_chunks: PreflightPreviewChunk[];
   embedding: PreflightEmbedding;
   duplicate: PreflightDuplicate | null;
+  warnings: string[];
+}
+
+/* ── URL preflight (POST /api/documents/url/preflight) ──────────────────── */
+/** Fetch and scrape a page, then quote it. Zero API calls, nothing written. */
+
+/**
+ * What the scraper found. `excerpt` is the reader's proof that scraping worked:
+ * real body text, not nav or a cookie banner. It is third-party content and is
+ * always rendered as plain text — never as HTML.
+ */
+export interface PreflightArticle {
+  title: string;
+  /** Null when the page names no author. */
+  author: string | null;
+  /** ISO date, or null when the page carries no publication date. */
+  published: string | null;
+  reading_minutes: number;
+  n_words: number;
+  /** The first ~320 characters of the real article text. */
+  excerpt: string;
+}
+
+/**
+ * `url` — the same normalised URL is already in the corpus.
+ * `content` — a *different* URL produced byte-identical text.
+ */
+export type ExistingKind = 'url' | 'content';
+
+/** The document this link (or this text) is already in the corpus as. */
+export interface PreflightExisting {
+  document_id: number;
+  filename: string;
+  created_at: string;
+  kind: ExistingKind;
+  /** The URL matches but the page text has changed — offer re-index, not "done". */
+  changed: boolean;
+}
+
+export interface UrlPreflight {
+  /** The URL as it was asked for. */
+  url: string;
+  /** Where the redirects ended up. */
+  final_url: string;
+  site_name: string;
+  mime_type: string;
+  /** Bytes fetched. */
+  size_bytes: number;
+  fetch_ms: number;
+  n_chars: number;
+  n_chunks: number;
+  chunk_chars: PreflightChunkChars;
+  /** The first five chunks only. */
+  preview_chunks: PreflightPreviewChunk[];
+  article: PreflightArticle;
+  embedding: PreflightEmbedding;
+  /** Null when the page is new to the corpus. */
+  existing: PreflightExisting | null;
   warnings: string[];
 }
 
@@ -178,9 +247,25 @@ export type StreamEvent = CacheEvent | RetrievalEvent | TokenEvent | DoneEvent |
 /* ── Ingest events (POST /api/documents/stream) ─────────────────────────── */
 /** Order: started → extracting → extracted → chunking → chunk* → chunked →
  *  embedding → embedding* → indexing → done. Every frame is a thing that
- *  actually happened. */
+ *  actually happened.
+ *
+ *  The URL stream (POST /api/documents/url/stream) is the same sequence with
+ *  three frames in front and one after: started → resolving → fetching →
+ *  fetched → extracting → article → extracted → … → done. */
 
-export type IngestStage = 'extracting' | 'extracted' | 'chunking' | 'embedding' | 'indexing';
+/**
+ * `resolving | fetching | fetched` only ever appear on the URL stream, at the
+ * front of the run. Everything from `extracting` on is the file path, unchanged.
+ */
+export type IngestStage =
+  | 'resolving'
+  | 'fetching'
+  | 'fetched'
+  | 'extracting'
+  | 'extracted'
+  | 'chunking'
+  | 'embedding'
+  | 'indexing';
 
 /**
  * Always the first frame. It carries the row id the server just created, which
@@ -198,6 +283,35 @@ export interface IngestStageEvent {
   label: string;
   /** On `extracted` only. */
   n_chars?: number;
+  /** On `resolving` only. */
+  host?: string;
+  /* On `fetched` only — what came back off the wire. */
+  status?: number;
+  bytes?: number;
+  content_type?: string;
+  final_url?: string;
+  /**
+   * True when the body was reused from the preflight's page cache, so pressing
+   * Index did not hit the site a second time. `fetch_ms: 0` is the proof.
+   */
+  from_cache?: boolean;
+  fetch_ms?: number;
+}
+
+/**
+ * Emitted exactly once on the URL stream, immediately before `extracted`. This
+ * is "here is what I found" — the reader confirms the right thing was scraped
+ * before a single embedding is paid for.
+ */
+export interface IngestArticleEvent {
+  type: 'article';
+  title: string;
+  site_name: string;
+  author: string | null;
+  published: string | null;
+  n_words: number;
+  reading_minutes: number;
+  excerpt: string;
 }
 
 /** One per chunk, emitted as the splitter produces it. */
@@ -234,6 +348,7 @@ export interface IngestDoneEvent {
 export type IngestEvent =
   | IngestStartedEvent
   | IngestStageEvent
+  | IngestArticleEvent
   | IngestChunkEvent
   | IngestChunkedEvent
   | IngestEmbeddingEvent
@@ -518,7 +633,7 @@ export interface Pipeline {
 /* ── Client-side view models ────────────────────────────────────────────── */
 
 /** The three top-level screens. Mirrored into the URL hash. */
-export type View = 'ask' | 'signals' | 'pipeline';
+export type View = 'ask' | 'signals' | 'pipeline' | 'infra';
 
 export type Phase = 'embedding' | 'retrieving' | 'generating' | 'done' | 'error';
 
@@ -561,6 +676,28 @@ export interface ChunkTile {
 /** Where the run is. 'queued' is before the first frame arrives. */
 export type RunStage = IngestStage | 'queued' | 'chunked' | 'done';
 
+/** The `article` frame, as the run holds it. */
+export interface RunArticle {
+  title: string;
+  siteName: string;
+  author: string | null;
+  published: string | null;
+  nWords: number;
+  readingMinutes: number;
+  excerpt: string;
+}
+
+/** The `fetched` frame — what actually came back off the wire, or out of the cache. */
+export interface RunFetched {
+  status: number;
+  bytes: number;
+  contentType: string | null;
+  finalUrl: string | null;
+  /** The preflight already had this page; the site was not hit twice. */
+  fromCache: boolean;
+  fetchMs: number;
+}
+
 /**
  * A run of the ingest stream, as the modal sees it.
  *
@@ -570,6 +707,8 @@ export type RunStage = IngestStage | 'queued' | 'chunked' | 'done';
  */
 export interface IngestRunState {
   startedAt: number;
+  /** Which stream this is. A URL run has two extra steps at the front. */
+  source: DocumentSource;
   /** From the `started` frame. Null until it lands — cancel handles that. */
   documentId: number | null;
   stage: RunStage;
@@ -584,6 +723,10 @@ export interface IngestRunState {
   /** Set by the `chunked` frame, once splitting is finished. */
   nChunks: number | null;
   embed: { done: number; total: number; cached: number; apiCalls: number } | null;
+  /** URL runs only. Set by the `fetched` frame. */
+  fetched: RunFetched | null;
+  /** URL runs only. Set by the one `article` frame, before any embedding. */
+  article: RunArticle | null;
   /** performance.now() at the first and last frame of each measured phase. */
   splitFrom: number | null;
   splitTo: number | null;

@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { AlertTriangle, Check } from 'lucide-react';
-import type { IngestRunState, Preflight, RunStage } from '../types';
-import { formatMs } from '../lib/format';
+import { AlertTriangle, Check, Download } from 'lucide-react';
+import type { DocumentSource, IngestRunState, Preflight, RunStage, UrlPreflight } from '../types';
+import { formatBytes, formatMs } from '../lib/format';
 import { transition } from '../lib/motion';
+import ArticleCard from './ArticleCard';
 import { Figure, FigureRow, LedgerFrame } from './CostLedger';
 
 /**
@@ -16,9 +17,22 @@ import { Figure, FigureRow, LedgerFrame } from './CostLedger';
  * yet be measured says so.
  */
 
-/** Where each server stage sits in the four-step pipeline, and whether it ends it. */
-const STEP_OF: Record<RunStage, { index: number; complete: boolean }> = {
+/**
+ * Where each server stage sits in the pipeline, and whether it ends it.
+ *
+ * A link run is the file run with one step in front of it: the page has to
+ * arrive before there is any text to extract. The three fetch stages collapse
+ * into that one step, because the reader does not care whether DNS or the
+ * request is the slow part — they care whether the page is here yet.
+ */
+type Step = { index: number; complete: boolean };
+
+const FILE_STEP_OF: Record<RunStage, Step> = {
   queued: { index: 0, complete: false },
+  // Only ever reached if a URL frame arrives on a file run, which it cannot.
+  resolving: { index: 0, complete: false },
+  fetching: { index: 0, complete: false },
+  fetched: { index: 0, complete: false },
   extracting: { index: 0, complete: false },
   extracted: { index: 0, complete: true },
   chunking: { index: 1, complete: false },
@@ -28,7 +42,34 @@ const STEP_OF: Record<RunStage, { index: number; complete: boolean }> = {
   done: { index: 3, complete: true },
 };
 
-const STEPS = ['extracting text', 'splitting into chunks', 'embedding chunks', 'writing vectors'];
+const URL_STEP_OF: Record<RunStage, Step> = {
+  queued: { index: 0, complete: false },
+  resolving: { index: 0, complete: false },
+  fetching: { index: 0, complete: false },
+  fetched: { index: 0, complete: true },
+  extracting: { index: 1, complete: false },
+  extracted: { index: 1, complete: true },
+  chunking: { index: 2, complete: false },
+  chunked: { index: 2, complete: true },
+  embedding: { index: 3, complete: false },
+  indexing: { index: 4, complete: false },
+  done: { index: 4, complete: true },
+};
+
+const FILE_STEPS = ['extracting text', 'splitting into chunks', 'embedding chunks', 'writing vectors'];
+
+const URL_STEPS = [
+  'fetching the page',
+  'finding the article text',
+  'splitting into chunks',
+  'embedding chunks',
+  'writing vectors',
+];
+
+const PIPELINE: Record<DocumentSource, { steps: string[]; stepOf: Record<RunStage, Step> }> = {
+  file: { steps: FILE_STEPS, stepOf: FILE_STEP_OF },
+  url: { steps: URL_STEPS, stepOf: URL_STEP_OF },
+};
 
 /** The newest few previews. Older ones scroll off; the histogram keeps them all. */
 const TICKER = 3;
@@ -98,6 +139,46 @@ function ChunkHistogram({ lengths, ceiling }: { lengths: number[]; ceiling: numb
   );
 }
 
+/**
+ * Where the page came from.
+ *
+ * The preflight already downloaded this page, and the server kept the bytes for
+ * a few minutes — so pressing Index reuses them instead of knocking on the site
+ * again. `from_cache` says that happened and `fetch_ms: 0` proves it. It is
+ * worth saying out loud: the reader pressed a button called Index, and the
+ * thing they might reasonably worry about is having made a stranger's server
+ * serve the same page twice for one decision.
+ */
+function FetchNote({ fetched }: { fetched: NonNullable<IngestRunState['fetched']> }) {
+  const reused = fetched.fromCache;
+
+  return (
+    <div
+      className={[
+        'flex items-start gap-2.5 rounded-xl border px-3.5 py-2.5',
+        reused ? 'border-cache/30 bg-cache/[0.05]' : 'border-line bg-ink-800',
+      ].join(' ')}
+    >
+      <Download size={14} className={`mt-0.5 shrink-0 ${reused ? 'text-cache' : 'text-paper-mute'}`} />
+      <p className="text-[12.5px] leading-relaxed text-paper-dim">
+        {reused ? (
+          <>
+            Reused the page from the check a moment ago — the site was not hit twice.{' '}
+            <span className="font-mono tabular-nums text-cache">{formatMs(fetched.fetchMs)}</span> to
+            read {formatBytes(fetched.bytes)} back out of memory.
+          </>
+        ) : (
+          <>
+            Fetched {formatBytes(fetched.bytes)} in{' '}
+            <span className="font-mono tabular-nums text-paper">{formatMs(fetched.fetchMs)}</span>
+            {fetched.status === 200 ? '' : ` · HTTP ${fetched.status}`}.
+          </>
+        )}
+      </p>
+    </div>
+  );
+}
+
 export default function IngestRun({
   run,
   report,
@@ -105,7 +186,7 @@ export default function IngestRun({
 }: {
   run: IngestRunState;
   /** The quote this run was committed from, for the prediction-versus-reality line. */
-  report: Preflight | null;
+  report: Preflight | UrlPreflight | null;
   ceiling: number | null;
 }) {
   const reduce = useReducedMotion() ?? false;
@@ -122,13 +203,62 @@ export default function IngestRun({
 
   const embed = run.embed;
   const doc = run.document;
-  const step = STEP_OF[run.stage];
+  const { steps, stepOf } = PIPELINE[run.source];
+  const step = stepOf[run.stage];
   const settled = step.complete ? step.index + 1 : step.index;
   const ratio = embed && embed.total > 0 ? embed.done / embed.total : 0;
 
   const wallElapsed = (finished ? (run.embedTo ?? run.splitTo ?? now) : now) - run.startedAt;
 
+  /**
+   * Where the text came from — shown only on a link run, and only once the
+   * frames that say so have arrived.
+   *
+   * The same two pieces in both tenses: how the page got here, and what was
+   * pulled out of it. They appear mid-run, the moment the server sends them,
+   * so the reader can see the wrong page was scraped while there is still a
+   * Cancel button on screen — not afterwards.
+   */
+  const provenance =
+    run.source !== 'url' ? null : (
+      <>
+        {run.fetched && (
+          <motion.div
+            initial={{ opacity: 0, y: reduce ? 0 : 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={transition(reduce)}
+          >
+            <FetchNote fetched={run.fetched} />
+          </motion.div>
+        )}
+
+        {run.article && (
+          <motion.section
+            initial={{ opacity: 0, y: reduce ? 0 : 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={transition(reduce)}
+          >
+            <h3 className="eyebrow">here is what was read</h3>
+            <div className="mt-2.5">
+              <ArticleCard
+                title={run.article.title}
+                siteName={run.article.siteName}
+                author={run.article.author}
+                published={run.article.published}
+                readingMinutes={run.article.readingMinutes}
+                nWords={run.article.nWords}
+                excerpt={run.article.excerpt}
+                url={run.fetched?.finalUrl ?? null}
+              />
+            </div>
+          </motion.section>
+        )}
+      </>
+    );
+
   const measure = [
+    // A link run measures one more thing than a file run: the page arriving.
+    ...(run.source === 'url' ? [run.fetched === null ? null : formatBytes(run.fetched.bytes)] : []),
     run.nChars === null ? null : `${run.nChars.toLocaleString()} chars`,
     run.nChunks === null
       ? run.nChunksSeen > 0
@@ -224,6 +354,8 @@ export default function IngestRun({
           </FigureRow>
         </LedgerFrame>
 
+        {provenance}
+
         {run.chunkChars.length > 0 && (
           <section>
             <h3 className="eyebrow">
@@ -296,11 +428,13 @@ export default function IngestRun({
         </FigureRow>
       </LedgerFrame>
 
+      {provenance}
+
       {/* ── The pipeline, ticking off ─────────────────────────────────────── */}
       <section>
         <h3 className="eyebrow">stages</h3>
         <ul className="mt-2.5 space-y-1.5">
-          {STEPS.map((label, i) => {
+          {steps.map((label, i) => {
             const state = i < settled ? 'done' : i === settled ? 'active' : 'pending';
             return (
               <li

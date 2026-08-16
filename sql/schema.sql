@@ -31,6 +31,23 @@ ALTER TABLE documents ADD COLUMN IF NOT EXISTS content_sha256 text;
 CREATE INDEX IF NOT EXISTS documents_content_sha256_idx
     ON documents (content_sha256) WHERE content_sha256 IS NOT NULL;
 
+-- Where the text came from. A pasted link becomes an ordinary document -- same chunks,
+-- same vectors, same retrieval -- so this is provenance, not a second kind of row.
+-- 'file' is the default so every document that existed before links did is still honest.
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_type text NOT NULL DEFAULT 'file';
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_url text;
+-- The dedup key: source_url after web.normalize_url(), which strips tracking params and
+-- other noise that does not change what the server returns. Kept beside the raw URL
+-- because the raw one is what a citation should link to.
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_url_norm text;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS title text;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS site_name text;
+
+-- Partial: only URL documents have a normalised URL, and "have we already indexed this
+-- link?" is the only question this index is asked.
+CREATE INDEX IF NOT EXISTS documents_source_url_norm_idx
+    ON documents (source_url_norm) WHERE source_url_norm IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS chunks (
     id           bigserial PRIMARY KEY,
     document_id  bigint      NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
@@ -142,3 +159,62 @@ CREATE TABLE IF NOT EXISTS api_calls (
 -- read by created_at, every aggregate groups by kind.
 CREATE INDEX IF NOT EXISTS api_calls_created_at_idx ON api_calls (created_at DESC);
 CREATE INDEX IF NOT EXISTS api_calls_kind_idx ON api_calls (kind);
+
+-- Which user action caused this request. One question makes several calls (embed the
+-- question, then generate) and a cache hit makes none, so without this column
+-- "what did that chat cost?" cannot be answered at all. Nullable: rows written before
+-- tracing existed belong to no trace and must stay readable.
+ALTER TABLE api_calls ADD COLUMN IF NOT EXISTS trace_id text;
+
+CREATE INDEX IF NOT EXISTS api_calls_trace_id_idx
+    ON api_calls (trace_id) WHERE trace_id IS NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- Traces: one row per user ACTION -- one chat turn, or one ingest run.
+--
+-- api_calls is the per-request ledger; this is the per-action one above it, and the
+-- join between them is api_calls.trace_id. The column names follow the OpenTelemetry
+-- GenAI conventions closely enough that this table can be exported to Langfuse /
+-- Phoenix / LangSmith later without reshaping.
+--
+-- The token and cost columns are a rollup of this trace's api_calls rows, computed by
+-- the one pricing function in metrics.py at write time. A trace that was answered from
+-- cache carries zeros and a NULL model on purpose: the model was never asked. The embed
+-- call a semantic lookup still needs remains visible in its spans and in the
+-- api_calls-derived totals on /api/costing/summary, so nothing is hidden by that.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS traces (
+    trace_id        text PRIMARY KEY,
+    -- chat | ingest
+    kind            text          NOT NULL,
+    -- the question asked, or the filename / URL ingested
+    label           text          NOT NULL DEFAULT '',
+    -- which documents were in scope (chat only)
+    scope_key       text,
+    -- miss | exact | semantic (chat only)
+    cache_kind      text,
+    cached          boolean       NOT NULL DEFAULT false,
+    n_citations     integer       NOT NULL DEFAULT 0,
+    -- the model that actually answered, after any fallbacks; NULL if none was called
+    model           text,
+    api_calls       integer       NOT NULL DEFAULT 0,
+    saved_calls     integer       NOT NULL DEFAULT 0,
+    prompt_tokens   integer       NOT NULL DEFAULT 0,
+    output_tokens   integer       NOT NULL DEFAULT 0,
+    thinking_tokens integer       NOT NULL DEFAULT 0,
+    total_tokens    integer       NOT NULL DEFAULT 0,
+    cost_usd        numeric(12,8) NOT NULL DEFAULT 0,
+    latency_ms      integer       NOT NULL DEFAULT 0,
+    -- {embed, cache_lookup, retrieve, generate, total} for a chat;
+    -- {extract, chunk, embed, index, total} for an ingest. The waterfall is derived
+    -- from this server-side so the UI never does arithmetic.
+    timings         jsonb         NOT NULL DEFAULT '{}'::jsonb,
+    ok              boolean       NOT NULL DEFAULT true,
+    error           text,
+    created_at      timestamptz   NOT NULL DEFAULT now()
+);
+
+-- The ledger is always read newest-first, optionally filtered to one kind.
+CREATE INDEX IF NOT EXISTS traces_created_at_idx ON traces (created_at DESC);
+CREATE INDEX IF NOT EXISTS traces_kind_idx ON traces (kind);

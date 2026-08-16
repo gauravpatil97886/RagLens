@@ -293,7 +293,16 @@ def _rates() -> dict[str, Any]:
     }
 
 
-def _usd(prompt: float, output: float, embed: float) -> float:
+def usd(prompt: float, output: float, embed: float) -> float:
+    """Price a bundle of tokens at the configured paid-tier rates.
+
+    THE pricing function. /api/metrics, /api/costing/* and the trace writer all call this
+    one — a screen that did its own arithmetic would be free to disagree with the screen
+    next to it the moment a rate in .env changed.
+
+    `output` must already include thinking tokens: Google bills thoughts at the output
+    rate, so there is deliberately no third argument for them.
+    """
     return (
         prompt / 1_000_000 * settings.price_chat_input_per_1m_usd
         + output / 1_000_000 * settings.price_chat_output_per_1m_usd
@@ -311,8 +320,8 @@ def _cost(totals: dict, saved: dict) -> dict[str, Any]:
     gen = totals["by_kind"][gemini.KIND_GENERATE]["tokens"]
     embed_tokens = sum(totals["by_kind"][k]["tokens"]["total"] for k in _EMBED_KINDS)
 
-    spent = _usd(gen["prompt"], gen["output"] + gen["thinking"], embed_tokens)
-    would_save = _usd(
+    spent = usd(gen["prompt"], gen["output"] + gen["thinking"], embed_tokens)
+    would_save = usd(
         saved["generate_prompt_tokens"],
         saved["generate_output_tokens"] + saved["generate_thinking_tokens"],
         saved["embed_tokens"],

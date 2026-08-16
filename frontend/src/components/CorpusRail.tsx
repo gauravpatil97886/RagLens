@@ -46,7 +46,7 @@ export default function CorpusRail({
         <button
           type="button"
           onClick={onAdd}
-          title="Analyse a file and see what indexing it costs, before anything is spent"
+          title="Analyse a file or a link and see what indexing it costs, before anything is spent"
           className="flex w-full items-center gap-2 rounded-xl border border-line bg-ink-850 px-3 py-2
                      text-[13px] font-medium text-paper-dim
                      transition-[background-color,border-color,color] duration-150
@@ -97,7 +97,7 @@ export default function CorpusRail({
         {!loading && !error && documents.length === 0 && (
           <p className="mt-5 px-1 text-[13px] leading-relaxed text-paper-mute">
             No documents yet. Whatever you add here becomes the only thing the model is
-            allowed to answer from. Drop a file anywhere on this window to start.
+            allowed to answer from. Drop a file anywhere on this window, or add a link, to start.
           </p>
         )}
 

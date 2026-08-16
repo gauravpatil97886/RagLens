@@ -1,6 +1,7 @@
+import type { ReactNode } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
 import { AlertTriangle, Copy, ShieldCheck } from 'lucide-react';
-import type { Preflight } from '../types';
+import type { Preflight, PreflightEmbedding } from '../types';
 import { rise, stagger, transition } from '../lib/motion';
 import { formatBytes } from '../lib/format';
 import { Figure, FigureRow, LedgerFrame } from './CostLedger';
@@ -26,7 +27,7 @@ import { Figure, FigureRow, LedgerFrame } from './CostLedger';
  * frames start arriving. Drawing a fake histogram here from three numbers would
  * be exactly the kind of invention this app exists to argue against.
  */
-function SizeBand({
+export function SizeBand({
   min,
   mean,
   max,
@@ -97,6 +98,75 @@ function SizeBand({
   );
 }
 
+/**
+ * The three figures that are the quote, in the frame they always appear in.
+ *
+ * Shared by the file quote and the link quote so the two flows read as one
+ * feature: same tone rule (mint when the answer is zero), same figure order,
+ * same position in the dialog. Only the footer sentence differs, because how
+ * the reading was taken differs — in memory for a file, over one HTTP request
+ * for a page.
+ */
+export function QuoteLedger({
+  embed,
+  nChunks,
+  footer,
+}: {
+  embed: PreflightEmbedding;
+  nChunks: number;
+  footer: ReactNode;
+}) {
+  const free = embed.api_calls_needed === 0;
+  // No tilde on a zero: nothing is approximate about none.
+  const tokens = `${embed.tokens_estimated && embed.estimated_tokens > 0 ? '~' : ''}${embed.estimated_tokens.toLocaleString()}`;
+
+  return (
+    <LedgerFrame
+      tone={free ? 'cache' : 'signal'}
+      eyebrow="what indexing this would cost"
+      headline={
+        free
+          ? nChunks === embed.already_cached
+            ? 'Free — every chunk is already embedded'
+            : 'Free — nothing here needs a new embedding'
+          : `${embed.to_embed.toLocaleString()} of ${nChunks.toLocaleString()} chunks need embedding`
+      }
+      footer={footer}
+    >
+      <FigureRow>
+        <Figure
+          value={embed.api_calls_needed.toLocaleString()}
+          label={embed.api_calls_needed === 1 ? 'API call' : 'API calls'}
+          tone={free ? 'cache' : 'signal'}
+          title="Chunks are embedded in batches, so this is fewer than the number of chunks."
+        />
+        <Figure
+          value={tokens}
+          label={
+            embed.estimated_tokens === 0
+              ? 'tokens'
+              : embed.tokens_estimated
+                ? 'tokens, estimated'
+                : 'tokens'
+          }
+          tone="paper"
+          title={
+            embed.tokens_estimated
+              ? 'Estimated at roughly four characters per token. Embedding responses carry no token counts, so this can never be measured exactly.'
+              : undefined
+          }
+        />
+        <Figure
+          value={embed.already_cached.toLocaleString()}
+          label="already cached"
+          tone={embed.already_cached > 0 ? 'cache' : 'mute'}
+          title="Chunks whose exact text is already in embedding_cache. These cost nothing."
+        />
+      </FigureRow>
+    </LedgerFrame>
+  );
+}
+
 export default function PreflightReport({
   report,
   ceiling,
@@ -108,8 +178,6 @@ export default function PreflightReport({
   const reduce = useReducedMotion() ?? false;
   const embed = report.embedding;
   const free = embed.api_calls_needed === 0;
-  // No tilde on a zero: nothing is approximate about none.
-  const tokens = `${embed.tokens_estimated && embed.estimated_tokens > 0 ? '~' : ''}${embed.estimated_tokens.toLocaleString()}`;
 
   const shape = [
     report.n_pages === null ? null : `${report.n_pages.toLocaleString()} page${report.n_pages === 1 ? '' : 's'}`,
@@ -122,16 +190,9 @@ export default function PreflightReport({
     <motion.div variants={stagger(reduce, 0.05)} initial="hidden" animate="show" className="space-y-5">
       {/* ── The ledger, in the future tense ─────────────────────────────── */}
       <motion.div variants={rise(reduce, 6)}>
-        <LedgerFrame
-          tone={free ? 'cache' : 'signal'}
-          eyebrow="what indexing this would cost"
-          headline={
-            free
-              ? report.n_chunks === embed.already_cached
-                ? 'Free — every chunk is already embedded'
-                : 'Free — nothing here needs a new embedding'
-              : `${embed.to_embed.toLocaleString()} of ${report.n_chunks.toLocaleString()} chunks need embedding`
-          }
+        <QuoteLedger
+          embed={embed}
+          nChunks={report.n_chunks}
           footer={
             <p className="flex items-start gap-2 text-[12.5px] leading-relaxed text-paper-dim">
               <ShieldCheck size={14} className={`mt-0.5 shrink-0 ${free ? 'text-cache' : 'text-signal'}`} />
@@ -142,38 +203,7 @@ export default function PreflightReport({
               </span>
             </p>
           }
-        >
-          <FigureRow>
-            <Figure
-              value={embed.api_calls_needed.toLocaleString()}
-              label={embed.api_calls_needed === 1 ? 'API call' : 'API calls'}
-              tone={free ? 'cache' : 'signal'}
-              title="Chunks are embedded in batches, so this is fewer than the number of chunks."
-            />
-            <Figure
-              value={tokens}
-              label={
-                embed.estimated_tokens === 0
-                  ? 'tokens'
-                  : embed.tokens_estimated
-                    ? 'tokens, estimated'
-                    : 'tokens'
-              }
-              tone="paper"
-              title={
-                embed.tokens_estimated
-                  ? 'Estimated at roughly four characters per token. Embedding responses carry no token counts, so this can never be measured exactly.'
-                  : undefined
-              }
-            />
-            <Figure
-              value={embed.already_cached.toLocaleString()}
-              label="already cached"
-              tone={embed.already_cached > 0 ? 'cache' : 'mute'}
-              title="Chunks whose exact text is already in embedding_cache. These cost nothing."
-            />
-          </FigureRow>
-        </LedgerFrame>
+        />
       </motion.div>
 
       {/* ── Duplicate ───────────────────────────────────────────────────── */}

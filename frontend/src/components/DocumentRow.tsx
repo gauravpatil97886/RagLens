@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
-import { Check, Trash2, AlertTriangle } from 'lucide-react';
+import { Check, ExternalLink, Link2, Trash2, AlertTriangle } from 'lucide-react';
 import type { DocumentMeta } from '../types';
 import { formatBytes, truncateMiddle } from '../lib/format';
 import { transition } from '../lib/motion';
@@ -31,6 +31,16 @@ export default function DocumentRow({
   const [confirming, setConfirming] = useState(false);
   const status = STATUS[doc.status] ?? STATUS.pending;
   const selectable = doc.status === 'ready';
+
+  /**
+   * A page and a file are the same kind of thing to the retriever, so the row
+   * is the same row — it only changes what it calls the document. A page's name
+   * is its title, and the thing that tells you which page it is, is the site it
+   * came from. The bytes stay on the file, where they mean something.
+   */
+  const isUrl = doc.source_type === 'url';
+  const primary = isUrl ? (doc.title ?? doc.filename) : truncateMiddle(doc.filename, 26);
+  const secondary = isUrl ? doc.site_name : formatBytes(doc.size_bytes);
 
   // A confirm that hangs around forever becomes a trap.
   useEffect(() => {
@@ -75,14 +85,20 @@ export default function DocumentRow({
           type="button"
           onClick={() => onOpen(doc.id)}
           className="min-w-0 flex-1 text-left"
-          title={`${doc.filename} — open its chunks`}
+          title={`${primary} — open its chunks`}
         >
-          <span className="block truncate text-[13px] text-paper">{truncateMiddle(doc.filename, 26)}</span>
+          <span className="flex min-w-0 items-center gap-1.5">
+            {isUrl && <Link2 size={11} className="shrink-0 text-signal" aria-label="From a link" />}
+            <span className="min-w-0 flex-1 truncate text-[13px] text-paper">{primary}</span>
+          </span>
           <span className="mt-0.5 flex flex-wrap items-center gap-x-2 font-mono text-2xs tabular-nums text-paper-mute">
-            <span>{formatBytes(doc.size_bytes)}</span>
+            {/* shrink-0 so the flex row wraps the chunk count onto a second
+                line rather than eating into a hostname that is the whole point
+                of the line. `max-w-full` still catches an absurd one. */}
+            {secondary && <span className="max-w-full shrink-0 truncate">{secondary}</span>}
             {doc.status === 'ready' && (
               <>
-                <span className="text-paper-faint">·</span>
+                {secondary && <span className="text-paper-faint">·</span>}
                 <span>{doc.n_chunks} chunks</span>
               </>
             )}
@@ -90,6 +106,20 @@ export default function DocumentRow({
         </button>
 
         <div className="flex shrink-0 items-center gap-1.5">
+          {isUrl && doc.source_url && (
+            <a
+              href={doc.source_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={`Open ${doc.source_url}`}
+              aria-label={`Open the original page for ${primary} in a new tab`}
+              className="rounded p-1 text-paper-faint opacity-0 transition-colors duration-150
+                         hover:text-signal focus-visible:opacity-100 group-hover:opacity-100"
+            >
+              <ExternalLink size={12} />
+            </a>
+          )}
+
           <span
             className={`rounded-md border px-1.5 py-0.5 text-[10.5px] ${status.className}`}
           >
@@ -99,7 +129,7 @@ export default function DocumentRow({
           <button
             type="button"
             onClick={() => (confirming ? onDelete(doc.id) : setConfirming(true))}
-            title={confirming ? 'Click again to delete' : `Delete ${doc.filename}`}
+            title={confirming ? 'Click again to delete' : `Delete ${primary}`}
             className={[
               'rounded p-1 transition-colors duration-150',
               confirming

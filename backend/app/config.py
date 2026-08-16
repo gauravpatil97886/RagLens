@@ -48,6 +48,17 @@ class Settings(BaseSettings):
     # --- Uploads ---
     max_upload_bytes: int = 20 * 1024 * 1024
 
+    # --- Fetching a pasted link ---
+    # Deliberately tight. Someone else's server decides how long it takes and how much it
+    # sends, so both are capped, and a redirect chain is followed only far enough to get
+    # through the usual http->https->canonical hops.
+    fetch_timeout_seconds: int = 15
+    max_fetch_bytes: int = 10 * 1024 * 1024
+    max_redirects: int = 5
+    # Long enough to read a preflight and press Index, short enough that "re-index" means
+    # re-fetch rather than replay a stale page.
+    fetch_cache_ttl_seconds: int = 300
+
     # --- Pricing, for the "what would this cost" panel only ---
     # This demo runs on the Google AI Studio FREE tier, so actual spend is always $0.
     # These are Google's published paid-tier list prices in USD per 1,000,000 tokens,

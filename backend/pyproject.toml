@@ -14,6 +14,13 @@ dependencies = [
     "python-multipart>=0.0.9",
     "pypdf>=5.0",
     "python-docx>=1.1",
+    # Fetching a pasted link. httpx is explicit rather than inherited from google-genai
+    # because web.py drives redirects and body streaming by hand and needs that API to
+    # stay put; trafilatura finds the article in a page and beautifulsoup4 is the
+    # get-every-visible-word fallback for pages it declines to score.
+    "httpx>=0.27",
+    "trafilatura>=2.2",
+    "beautifulsoup4>=4.12",
 ]
 
 # This is an application, not a library — nothing to build/install as a package.

@@ -42,6 +42,27 @@ export function formatSince(iso: string | null): string {
   return formatAge((Date.now() - then) / 1000);
 }
 
+/**
+ * A publication date, as a reader would write it.
+ *
+ * Scraped pages give this as anything from a full timestamp to a bare
+ * `2023-08-08`, so an unparseable value is returned untouched rather than
+ * turned into "Invalid Date". A date with no time in it is formatted in UTC:
+ * read as local, midnight would slide it to the previous day west of Greenwich.
+ */
+export function formatDay(iso: string | null): string | null {
+  if (!iso) return null;
+  const at = Date.parse(iso);
+  if (Number.isNaN(at)) return iso;
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(iso.trim());
+  return new Date(at).toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    ...(dateOnly ? { timeZone: 'UTC' } : {}),
+  });
+}
+
 export function formatCount(n: number, singular: string, plural = `${singular}s`): string {
   return `${n} ${n === 1 ? singular : plural}`;
 }

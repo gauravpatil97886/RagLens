@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Iterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -20,7 +21,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
-from . import cache, db, extract, gemini, metrics, rag
+from . import cache, costing, db, extract, gemini, infra, metrics, rag, web
 from .config import settings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -45,6 +46,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# The two read-only lens modules live in their own routers. They are mounted here rather
+# than defining their routes in this file so that the app's wiring stays in one place and
+# each module stays independently readable.
+app.include_router(infra.router)
+app.include_router(costing.router)
 
 
 @app.exception_handler(Exception)
@@ -77,6 +85,12 @@ def _document(row: dict[str, Any], ingest_ms: int | None = None) -> dict[str, An
         "n_chars": row["n_chars"],
         "status": row["status"],
         "created_at": _iso(row["created_at"]),
+        # Provenance, on every document: a file simply has nothing to say here, and the
+        # UI gets one shape to render rather than two.
+        "source_type": row["source_type"],
+        "source_url": row["source_url"],
+        "title": row["title"],
+        "site_name": row["site_name"],
     }
     if row["status"] == "failed" and row.get("error"):
         out["error"] = row["error"]
@@ -177,7 +191,15 @@ def upload_document_stream(file: UploadFile = File(...)):
     generator drained — so the two paths cannot drift apart.
     """
     filename, data = _accept_upload(file)
+    return _ingest_stream(rag.ingest_events(filename, data), filename)
 
+
+def _ingest_stream(source: Iterator[dict[str, Any]], what: str) -> StreamingResponse:
+    """Serialise an ingest generator as SSE, and clean up if the client walks away.
+
+    Files and links run different generators but produce the same frame vocabulary and
+    need the same abandonment handling, so the wire half lives here once.
+    """
     # Shared between the generator and the cleanup below, which Starlette may run on a
     # different thread once the response is over.
     run: dict[str, Any] = {"document_id": None, "settled": False}
@@ -196,7 +218,7 @@ def upload_document_stream(file: UploadFile = File(...)):
             if rag.discard_partial(run["document_id"]):
                 log.info(
                     "ingest of %s was abandoned; removed partial document %s and its chunks",
-                    filename,
+                    what,
                     run["document_id"],
                 )
         except Exception:
@@ -205,7 +227,7 @@ def upload_document_stream(file: UploadFile = File(...)):
     def events():
         started = time.perf_counter()
         try:
-            for event in rag.ingest_events(filename, data):
+            for event in source:
                 if event["type"] == "started":
                     run["document_id"] = event["document_id"]
                 elif event["type"] == "error":
@@ -222,7 +244,7 @@ def upload_document_stream(file: UploadFile = File(...)):
                     yield _sse(event)
         except Exception as exc:  # the stream is already open, so errors go inline
             run["settled"] = True
-            log.exception("ingest stream failed for %s", filename)
+            log.exception("ingest stream failed for %s", what)
             yield _sse({"type": "error", "detail": f"{type(exc).__name__}: {exc}"})
         finally:
             # Reached via GeneratorExit if this generator is closed early. It often is
@@ -243,6 +265,52 @@ def upload_document_stream(file: UploadFile = File(...)):
         # which is the only moment we can be sure nobody is going to read the rest.
         background=BackgroundTask(cleanup),
     )
+
+
+# ---------------------------------------------------------------------------
+# Documents from a link
+# ---------------------------------------------------------------------------
+
+
+class UrlRequest(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
+
+
+@app.post("/api/documents/url/preflight")
+def preflight_url(req: UrlRequest):
+    """Fetch a link, show what was scraped, and price indexing it. Spends nothing.
+
+    Every refusal a link can earn — private address, wrong content type, no article text
+    — surfaces here as a plain 400, before a row exists and before any quota is used.
+    """
+    try:
+        result = rag.preflight_url(req.url.strip())
+    except (web.FetchError, extract.ExtractionError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    if result["existing"]:
+        # rag.py deals in rows; turning a timestamp into the wire format is this layer's job.
+        result["existing"]["created_at"] = _iso(result["existing"]["created_at"])
+    return result
+
+
+@app.post("/api/documents/url/stream")
+def ingest_url_stream(req: UrlRequest):
+    """Fetch, scrape and index a link, narrated as it happens.
+
+    The page is loaded here rather than inside the generator so a bad link is an ordinary
+    400 instead of an error frame in a stream that should never have opened. It lands in
+    web.py's body cache on the way through, so a preflight moments earlier means this
+    costs no second request to the site — which is what `from_cache` on the `fetched`
+    frame reports.
+    """
+    url = req.url.strip()
+    try:
+        page = web.load(url)
+    except web.FetchError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    return _ingest_stream(rag.ingest_url_events(url, page), url)
 
 
 @app.get("/api/documents")
@@ -289,44 +357,55 @@ _REPLAY_DELAY = 0.006
 @app.post("/api/chat/stream")
 def chat_stream(req: ChatRequest):
     question = req.question.strip()
+    # Opened out here, before the generator exists, because the response wrapper below
+    # needs the id: every step of a streaming response runs in its own copy of the
+    # context, so the trace has to re-stamp itself before each one.
+    rec = costing.start(costing.KIND_CHAT, question)
 
     def events():
-        try:
-            prep = rag.prepare(question, req.document_ids, req.top_k)
+        with rec:
+            try:
+                prep = rag.prepare(question, req.document_ids, req.top_k)
 
-            # Order is fixed by the contract: cache verdict, then citation cards, then text.
-            yield _sse({"type": "cache", "cache": prep.cache})
-            yield _sse({"type": "retrieval", "citations": prep.citations})
+                # Order is fixed by the contract: cache verdict, then citation cards,
+                # then text.
+                yield _sse({"type": "cache", "cache": prep.cache})
+                yield _sse({"type": "retrieval", "citations": prep.citations})
 
-            if prep.answer is not None:
-                # Cache hit, or the no-relevant-context short-circuit: replay, don't call.
-                for i in range(0, len(prep.answer), _REPLAY_CHARS):
-                    yield _sse({"type": "token", "text": prep.answer[i : i + _REPLAY_CHARS]})
-                    time.sleep(_REPLAY_DELAY)
-            else:
-                started = time.perf_counter()
-                parts: list[str] = []
-                for token in rag.generate_stream(prep):
-                    parts.append(token)
-                    yield _sse({"type": "token", "text": token})
-                prep.timings["generate"] = int((time.perf_counter() - started) * 1000)
-                rag.finish(prep, "".join(parts))
+                if prep.answer is not None:
+                    # Cache hit, or the no-relevant-context short-circuit: replay, don't call.
+                    for i in range(0, len(prep.answer), _REPLAY_CHARS):
+                        yield _sse({"type": "token", "text": prep.answer[i : i + _REPLAY_CHARS]})
+                        time.sleep(_REPLAY_DELAY)
+                else:
+                    started = time.perf_counter()
+                    parts: list[str] = []
+                    for token in rag.generate_stream(prep):
+                        parts.append(token)
+                        yield _sse({"type": "token", "text": token})
+                    prep.timings["generate"] = int((time.perf_counter() - started) * 1000)
+                    rag.finish(prep, "".join(parts))
 
-            prep.timings["total"] = int((time.perf_counter() - prep.started) * 1000)
-            yield _sse(
-                {
-                    "type": "done",
-                    "cached": prep.cache["hit"],
-                    "cache": prep.cache,
-                    "timings_ms": prep.timings,
-                }
-            )
-        except Exception as exc:  # the stream is already open, so errors go inline
-            log.exception("stream failed")
-            yield _sse({"type": "error", "detail": f"{type(exc).__name__}: {exc}"})
+                prep.timings["total"] = int((time.perf_counter() - prep.started) * 1000)
+                rag.record_trace(rec, prep)
+                yield _sse(
+                    {
+                        "type": "done",
+                        "cached": prep.cache["hit"],
+                        "cache": prep.cache,
+                        "timings_ms": prep.timings,
+                    }
+                )
+            except Exception as exc:  # the stream is already open, so errors go inline
+                log.exception("stream failed")
+                # Caught here, so the trace has to be told; an unraised failure is still
+                # a failed action.
+                rec.ok = False
+                rec.error = f"{type(exc).__name__}: {exc}"
+                yield _sse({"type": "error", "detail": f"{type(exc).__name__}: {exc}"})
 
     return StreamingResponse(
-        events(),
+        rec.steps(events()),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

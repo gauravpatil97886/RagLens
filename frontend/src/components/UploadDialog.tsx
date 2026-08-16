@@ -1,13 +1,33 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { AlertTriangle, FileUp, Loader2, X } from 'lucide-react';
-import { ApiError, deleteDocument, getPipeline, preflightDocument, streamUpload } from '../api';
-import type { ChunkTile, DocumentMeta, IngestRunState, Preflight } from '../types';
+import { AlertTriangle, FileUp, Link2, Loader2, X } from 'lucide-react';
+import {
+  ApiError,
+  deleteDocument,
+  getPipeline,
+  preflightDocument,
+  preflightUrl,
+  streamUpload,
+  streamUrlIngest,
+} from '../api';
+import type {
+  ChunkTile,
+  DocumentMeta,
+  DocumentSource,
+  IngestEvent,
+  IngestRunState,
+  Preflight,
+  UrlPreflight,
+} from '../types';
 import { formatBytes } from '../lib/format';
 import { transition } from '../lib/motion';
 import { ACCEPT_ATTR, firstFile, screenFile } from '../lib/upload';
+import { parseLink, screenLink } from '../lib/url';
 import IngestRun from './IngestRun';
+import LinkChooser from './LinkChooser';
+import LinkFetching from './LinkFetching';
 import PreflightReport from './PreflightReport';
+import UrlPreflightReport from './UrlPreflightReport';
 
 /**
  * Adding a document, as a decision rather than a side effect.
@@ -20,16 +40,86 @@ import PreflightReport from './PreflightReport';
  * row written. Only "Index it" spends anything.
  *
  * Three states, one frame:
- *   choose    → pick a file (screened here before a byte leaves the browser)
+ *   choose    → pick a file, or paste a link (both screened before anything leaves)
  *   quote     → what it would cost, and what chunking did to the document
  *   run       → what it is actually costing, frame by frame, cancellable
  *
- * Cancelling is real. The stream's first frame carries the row id, so aborting
- * the fetch is followed by DELETE /api/documents/{id}; cancel before that frame
- * lands and the server's own disconnect cleanup is what removes the row.
+ * Two ways in, one shape. A pasted link is the same journey with one extra step
+ * at the front: the page has to arrive before there is text to quote. Preflight
+ * fetches it once — one HTTP request, still zero model calls — and the server
+ * holds the body for a few minutes, so pressing Index does not make a stranger's
+ * server serve the same page twice for one decision.
+ *
+ * Cancelling is real, and identical on both paths. The stream's first frame
+ * carries the row id, so aborting the fetch is followed by
+ * DELETE /api/documents/{id}; cancel before that frame lands and the server's
+ * own disconnect cleanup is what removes the row.
  */
 
 type Phase = 'choose' | 'analysing' | 'quote' | 'rejected' | 'running';
+
+/** Which of the two ways in is on screen. Mirrors `DocumentSource` exactly. */
+type Mode = DocumentSource;
+
+/**
+ * File / Link.
+ *
+ * Two ways to say the same thing — "here is a document" — so they are one
+ * control rather than two screens. It only exists while there is a choice left
+ * to make: once something has been analysed, switching would silently throw the
+ * quote away, so the switch leaves and the footer's Cancel is the way back.
+ */
+function SourceSwitch({
+  mode,
+  onChange,
+  reduce,
+}: {
+  mode: Mode;
+  onChange: (next: Mode) => void;
+  reduce: boolean;
+}) {
+  const options: { value: Mode; label: string; Glyph: typeof FileUp; hint: string }[] = [
+    { value: 'file', label: 'File', Glyph: FileUp, hint: 'Upload a PDF, TXT, MD or DOCX' },
+    { value: 'url', label: 'Link', Glyph: Link2, hint: 'Paste a link to a web page' },
+  ];
+
+  return (
+    <div
+      role="tablist"
+      aria-label="Where the document comes from"
+      className="mb-5 inline-flex rounded-xl border border-line bg-ink-800 p-1"
+    >
+      {options.map(({ value, label, Glyph, hint }) => {
+        const on = mode === value;
+        return (
+          <button
+            key={value}
+            type="button"
+            role="tab"
+            aria-selected={on}
+            title={hint}
+            onClick={() => onChange(value)}
+            className={[
+              'relative inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-[12.5px] font-medium',
+              'transition-colors duration-150',
+              on ? 'text-paper' : 'text-paper-mute hover:text-paper-dim',
+            ].join(' ')}
+          >
+            {on && (
+              <motion.span
+                layoutId="source-switch-thumb"
+                transition={transition(reduce, 0.2)}
+                className="absolute inset-0 rounded-lg border border-line-strong bg-ink-700"
+              />
+            )}
+            <Glyph size={13} className={`relative shrink-0 ${on ? 'text-signal' : ''}`} />
+            <span className="relative">{label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -39,6 +129,7 @@ export default function UploadDialog({
   onClose,
   onIndexed,
   onDirty,
+  onUseExisting,
 }: {
   /** A file dropped on the window, already in hand when the dialog opens. */
   initialFile: File | null;
@@ -47,6 +138,11 @@ export default function UploadDialog({
   onIndexed: (doc: DocumentMeta) => void;
   /** The server may have changed underneath us. Re-read the list and the stats. */
   onDirty: () => void;
+  /**
+   * The reader chose the copy that is already in the corpus rather than making
+   * a second one. Put that document in scope and show it.
+   */
+  onUseExisting?: (documentId: number) => void;
 }) {
   const reduce = useReducedMotion() ?? false;
   const titleId = useId();
@@ -65,6 +161,19 @@ export default function UploadDialog({
   const [report, setReport] = useState<Preflight | null>(null);
   const [run, setRun] = useState<IngestRunState | null>(null);
   const [confirming, setConfirming] = useState(false);
+
+  /* ── The link half ─────────────────────────────────────────────────────── */
+  // A file already in hand means the reader dropped one; opening on the link
+  // tab would throw it away.
+  const [mode, setMode] = useState<Mode>('file');
+  /** Exactly what is in the field, untouched. */
+  const [url, setUrl] = useState('');
+  /** The absolute URL that was actually sent — what the run and the retry use. */
+  const [submitted, setSubmitted] = useState<string | null>(null);
+  /** The browser's own objection, held back until the reader tries to submit. */
+  const [linkProblem, setLinkProblem] = useState<string | null>(null);
+  const [urlReport, setUrlReport] = useState<UrlPreflight | null>(null);
+
   /** `chunking.chunk_size`. Null until /api/pipeline answers — never guessed. */
   const [ceiling, setCeiling] = useState<number | null>(null);
   const [over, setOver] = useState(false);
@@ -95,28 +204,45 @@ export default function UploadDialog({
   }, []);
 
   /* ── Preflight ─────────────────────────────────────────────────────────── */
+  // One effect, two sources. A 400 from either endpoint is the contract's own
+  // plain-English refusal — a PDF behind a link, a page that is mostly
+  // JavaScript, a private address — so it is shown verbatim rather than
+  // paraphrased into something vaguer.
   useEffect(() => {
-    if (phase !== 'analysing' || !file) return;
+    if (phase !== 'analysing') return;
+    const target = mode === 'url' ? submitted : file;
+    if (!target) return;
+
     const controller = new AbortController();
     preflightAbort.current = controller;
 
-    preflightDocument(file, controller.signal)
-      .then((res) => {
-        if (controller.signal.aborted) return;
-        setReport(res);
-        setPhase('quote');
-      })
-      .catch((err: unknown) => {
-        if (controller.signal.aborted) return;
-        if (err instanceof DOMException && err.name === 'AbortError') return;
-        setRejection(
-          err instanceof ApiError ? err.message : 'That file could not be read.',
-        );
-        setPhase('rejected');
-      });
+    const fail = (err: unknown, fallback: string) => {
+      if (controller.signal.aborted) return;
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      setRejection(err instanceof ApiError ? err.message : fallback);
+      setPhase('rejected');
+    };
+
+    if (mode === 'url' && submitted) {
+      preflightUrl(submitted, controller.signal)
+        .then((res) => {
+          if (controller.signal.aborted) return;
+          setUrlReport(res);
+          setPhase('quote');
+        })
+        .catch((err: unknown) => fail(err, 'That page could not be read.'));
+    } else if (file) {
+      preflightDocument(file, controller.signal)
+        .then((res) => {
+          if (controller.signal.aborted) return;
+          setReport(res);
+          setPhase('quote');
+        })
+        .catch((err: unknown) => fail(err, 'That file could not be read.'));
+    }
 
     return () => controller.abort();
-  }, [phase, file]);
+  }, [phase, file, mode, submitted]);
 
   /* ── Choosing ──────────────────────────────────────────────────────────── */
 
@@ -135,11 +261,75 @@ export default function UploadDialog({
     setPhase('analysing');
   }, []);
 
+  /**
+   * Send the pasted link off to be quoted.
+   *
+   * `screenLink` catches only what the browser can see is wrong — a missing
+   * domain, a scheme that isn't http — and it says it in the server's own
+   * words, so one problem reads as one sentence wherever it was caught. Every
+   * other judgement is the server's.
+   */
+  const submitLink = useCallback(() => {
+    const problem = screenLink(url);
+    if (problem) {
+      setLinkProblem(problem);
+      return;
+    }
+    const link = parseLink(url);
+    if (!link) {
+      setLinkProblem('That doesn’t look like a web address.');
+      return;
+    }
+    setLinkProblem(null);
+    setRejection(null);
+    setUrlReport(null);
+    setRun(null);
+    setSubmitted(link.href);
+    setPhase('analysing');
+  }, [url]);
+
+  /**
+   * A file dropped while the link side is showing.
+   *
+   * The window-level handler stands down whenever this dialog is open, so
+   * without this a drop onto the link screen would be swallowed in silence.
+   * The reader has said which of the two they meant more clearly than the
+   * switch ever could, so the switch follows them.
+   */
+  const takeDropped = useCallback(
+    (candidate: File | null) => {
+      if (!candidate) return;
+      setMode('file');
+      setUrlReport(null);
+      setSubmitted(null);
+      setLinkProblem(null);
+      take(candidate);
+    },
+    [take],
+  );
+
   const startOver = useCallback(() => {
     preflightAbort.current?.abort();
     setFile(null);
     setReport(null);
+    setUrlReport(null);
+    setSubmitted(null);
     setRejection(null);
+    setLinkProblem(null);
+    setRun(null);
+    setPhase('choose');
+  }, []);
+
+  /** The switch. Whatever the other side was holding is dropped, deliberately. */
+  const switchMode = useCallback((next: Mode) => {
+    preflightAbort.current?.abort();
+    setMode(next);
+    setFile(null);
+    setReport(null);
+    setUrlReport(null);
+    setSubmitted(null);
+    setRejection(null);
+    setLinkProblem(null);
     setRun(null);
     setPhase('choose');
   }, []);
@@ -151,7 +341,10 @@ export default function UploadDialog({
   }, []);
 
   const commit = useCallback(() => {
-    if (!file) return;
+    // Exactly one of these is set, and which one decides everything below.
+    const link = mode === 'url' ? submitted : null;
+    const blob = mode === 'url' ? null : file;
+    if (link === null && blob === null) return;
 
     const controller = new AbortController();
     streamAbort.current = controller;
@@ -160,15 +353,18 @@ export default function UploadDialog({
 
     setRun({
       startedAt: Date.now(),
+      source: mode,
       documentId: null,
       stage: 'queued',
-      label: 'Uploading',
+      label: mode === 'url' ? 'Fetching the page' : 'Uploading',
       nChars: null,
       chunks: [],
       chunkChars: [],
       nChunksSeen: 0,
       nChunks: null,
       embed: null,
+      fetched: null,
+      article: null,
       splitFrom: null,
       splitTo: null,
       embedFrom: null,
@@ -217,9 +413,8 @@ export default function UploadDialog({
 
     const settled: { doc: DocumentMeta | null } = { doc: null };
 
-    streamUpload(
-      file,
-      (event) => {
+    const onEvent = (event: IngestEvent) => {
+      {
         const at = Date.now();
         switch (event.type) {
           case 'started':
@@ -239,8 +434,39 @@ export default function UploadDialog({
               stage: event.stage,
               label: event.label,
               nChars: event.n_chars ?? state.nChars,
+              // `fetched` carries the only numbers the wire produced. They are
+              // read off the frame rather than measured here: `from_cache` with
+              // `fetch_ms: 0` is the server saying it reused the preflight's
+              // copy, and a clock in the browser could not tell that apart from
+              // a fast site.
+              fetched:
+                event.stage === 'fetched'
+                  ? {
+                      status: event.status ?? 0,
+                      bytes: event.bytes ?? 0,
+                      contentType: event.content_type ?? null,
+                      finalUrl: event.final_url ?? null,
+                      fromCache: event.from_cache ?? false,
+                      fetchMs: event.fetch_ms ?? 0,
+                    }
+                  : state.fetched,
               splitFrom: event.stage === 'chunking' ? at : state.splitFrom,
               embedFrom: event.stage === 'embedding' ? at : state.embedFrom,
+            }));
+            break;
+          case 'article':
+            // Exactly once, before a single embedding is paid for.
+            patchRun((state) => ({
+              ...state,
+              article: {
+                title: event.title,
+                siteName: event.site_name,
+                author: event.author,
+                published: event.published,
+                nWords: event.n_words,
+                readingMinutes: event.reading_minutes,
+                excerpt: event.excerpt,
+              },
             }));
             break;
           case 'chunk':
@@ -288,9 +514,18 @@ export default function UploadDialog({
             patchRun((state) => ({ ...state, error: event.detail }));
             break;
         }
-      },
-      controller.signal,
-    )
+      }
+    };
+
+    // Two endpoints, one reader. The URL stream is the file stream with three
+    // frames in front of it and one `article` frame after extraction, so
+    // nothing above needs to know which one it is watching.
+    const stream =
+      link !== null
+        ? streamUrlIngest(link, onEvent, controller.signal)
+        : streamUpload(blob as File, onEvent, controller.signal);
+
+    stream
       .then(() => {
         flushNow();
         if (cancelled.current) return;
@@ -328,7 +563,7 @@ export default function UploadDialog({
         if (streamAbort.current === controller) streamAbort.current = null;
         if (!cancelled.current) onDirty();
       });
-  }, [file, onDirty, onIndexed, patchRun]);
+  }, [file, mode, submitted, onDirty, onIndexed, patchRun]);
 
   /**
    * Stop a run and leave nothing behind.
@@ -459,39 +694,57 @@ export default function UploadDialog({
 
   /* ── Copy ──────────────────────────────────────────────────────────────── */
 
+  const link = mode === 'url' ? parseLink(submitted ?? url) : null;
+  /** Whichever quote is on screen. Both endpoints answer with the same ledger. */
+  const quote: Preflight | UrlPreflight | null = mode === 'url' ? urlReport : report;
+  const existing = urlReport?.existing ?? null;
+  /** What the run — or the quote — is about, in the reader's own words. */
+  const subject =
+    mode === 'url' ? (urlReport?.article.title ?? link?.domain ?? 'that page') : (file?.name ?? null);
+
   const title =
     phase === 'choose'
       ? 'Add a document'
       : phase === 'rejected'
-        ? 'That file can’t be indexed'
+        ? mode === 'url'
+          ? 'That link can’t be indexed'
+          : 'That file can’t be indexed'
         : phase === 'running'
           ? run?.document
             ? `${run.document.filename} is indexed`
             : run?.error
-              ? `${file?.name ?? 'This document'} was not indexed`
-              : `Indexing ${file?.name ?? 'document'}`
-          : (file?.name ?? 'Add a document');
+              ? `${subject ?? 'This document'} was not indexed`
+              : `Indexing ${subject ?? 'document'}`
+          : phase === 'analysing' && mode === 'url'
+            ? `Reading ${link?.domain ?? 'the page'}`
+            : (subject ?? 'Add a document');
 
   const subtitle =
     phase === 'choose'
       ? 'You will see what indexing costs before anything is sent to a model.'
       : phase === 'analysing'
-        ? 'Reading and chunking the file. No API calls are being made.'
-        : phase === 'quote' && file
-          ? `${formatBytes(file.size)} · analysed without a single API call`
-          : phase === 'running' && run?.document
-            ? 'It is in the corpus and in scope for your next question.'
-            : // The server's own words for what it is doing right now.
-              running && run?.label
-              ? run.label
-              : null;
+        ? mode === 'url'
+          ? 'Fetching the page and pulling the article out of it. No API calls are being made.'
+          : 'Reading and chunking the file. No API calls are being made.'
+        : phase === 'quote' && mode === 'url' && urlReport
+          ? `${urlReport.site_name} · ${formatBytes(urlReport.size_bytes)} · analysed without a single API call`
+          : phase === 'quote' && file
+            ? `${formatBytes(file.size)} · analysed without a single API call`
+            : phase === 'running' && run?.document
+              ? 'It is in the corpus and in scope for your next question.'
+              : // The server's own words for what it is doing right now.
+                running && run?.label
+                ? run.label
+                : null;
 
   /** Read out to a screen reader as the server's frames arrive. */
   const announcement =
     phase === 'analysing'
-      ? 'Analysing the file. No API calls.'
-      : phase === 'quote' && report
-        ? `Ready to index. ${report.embedding.api_calls_needed} API calls needed.`
+      ? mode === 'url'
+        ? 'Fetching the page. No API calls.'
+        : 'Analysing the file. No API calls.'
+      : phase === 'quote' && quote
+        ? `${existing ? 'Already in the corpus. ' : 'Ready to index. '}${quote.embedding.api_calls_needed} API calls needed.`
         : phase === 'running'
           ? (run?.error ?? run?.label ?? '')
           : phase === 'rejected'
@@ -557,15 +810,70 @@ export default function UploadDialog({
 
         {/* ── Body ────────────────────────────────────────────────────────── */}
         <div className="scroll-quiet min-h-0 flex-1 overflow-y-auto px-5 py-5">
+          {/* Outside the crossfade below, so the thumb slides between the two
+              instead of the whole control fading out and back in. */}
+          {phase === 'choose' && (
+            <SourceSwitch mode={mode} onChange={switchMode} reduce={reduce} />
+          )}
+
           <AnimatePresence mode="wait" initial={false}>
             <motion.div
-              key={phase}
+              key={`${mode}-${phase}`}
               initial={{ opacity: 0, y: reduce ? 0 : 6 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, transition: transition(reduce, 0.09) }}
               transition={transition(reduce, 0.2)}
             >
-              {phase === 'choose' && (
+              {phase === 'choose' && mode === 'url' && (
+                <div
+                  onDragEnter={(e) => {
+                    e.preventDefault();
+                    depth.current += 1;
+                    setOver(true);
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'copy';
+                  }}
+                  onDragLeave={(e) => {
+                    e.preventDefault();
+                    depth.current -= 1;
+                    if (depth.current <= 0) {
+                      depth.current = 0;
+                      setOver(false);
+                    }
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    depth.current = 0;
+                    setOver(false);
+                    takeDropped(firstFile(e.dataTransfer.files));
+                  }}
+                  className={[
+                    '-m-2 rounded-2xl border border-dashed p-2 transition-colors duration-150',
+                    over ? 'border-signal bg-signal/[0.07]' : 'border-transparent',
+                  ].join(' ')}
+                >
+                  <LinkChooser
+                    value={url}
+                    onChange={(next) => {
+                      setUrl(next);
+                      // The complaint belongs to the string that earned it.
+                      setLinkProblem(null);
+                    }}
+                    onSubmit={submitLink}
+                    problem={linkProblem}
+                  />
+                  {over && (
+                    <p className="mt-2 text-[12.5px] leading-relaxed text-signal">
+                      Release to analyse that file instead.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {phase === 'choose' && mode === 'file' && (
                 <div
                   onDragEnter={(e) => {
                     e.preventDefault();
@@ -636,7 +944,13 @@ export default function UploadDialog({
                 </div>
               )}
 
-              {phase === 'analysing' && (
+              {/* A link's wait has a knowable sequence, so it gets the sequence
+                  rather than a spinner. A file's does not. */}
+              {phase === 'analysing' && mode === 'url' && (
+                <LinkFetching domain={link?.domain ?? 'the page'} />
+              )}
+
+              {phase === 'analysing' && mode === 'file' && (
                 <div className="flex flex-col items-center gap-3 py-14 text-center">
                   <Loader2 size={20} className="animate-spin text-signal" />
                   <p className="text-[14px] font-medium text-paper">Reading {file?.name}</p>
@@ -647,27 +961,43 @@ export default function UploadDialog({
                 </div>
               )}
 
-              {phase === 'quote' && report && <PreflightReport report={report} ceiling={ceiling} />}
+              {phase === 'quote' && mode === 'url' && urlReport && (
+                <UrlPreflightReport report={urlReport} ceiling={ceiling} />
+              )}
+
+              {phase === 'quote' && mode === 'file' && report && (
+                <PreflightReport report={report} ceiling={ceiling} />
+              )}
 
               {phase === 'rejected' && (
                 <div className="flex items-start gap-3 rounded-xl border border-alert/35 bg-alert/[0.06] px-4 py-3.5">
                   <AlertTriangle size={16} className="mt-0.5 shrink-0 text-alert" />
                   <div className="min-w-0">
-                    {/* The reason below already names the file, so the heading
-                        does not say it a second time. */}
-                    <p className="truncate text-[13.5px] font-medium text-alert" title={file?.name}>
-                      {file ? file.name : 'Nothing was read'}
+                    {/* The reason below already names the thing, so the heading
+                        does not say it a second time. A refused link is shown in
+                        full — which part of it is wrong is often the whole point. */}
+                    <p
+                      className="truncate text-[13.5px] font-medium text-alert"
+                      title={mode === 'url' ? (submitted ?? url) : file?.name}
+                    >
+                      {mode === 'url'
+                        ? (submitted ?? url ?? 'Nothing was read')
+                        : file
+                          ? file.name
+                          : 'Nothing was read'}
                     </p>
                     <p className="mt-1.5 text-[13.5px] leading-relaxed text-paper-dim">{rejection}</p>
                     <p className="mt-2 text-[12.5px] leading-relaxed text-paper-mute">
-                      Nothing was uploaded and nothing was spent.
+                      {mode === 'url'
+                        ? 'Nothing was indexed and nothing was spent.'
+                        : 'Nothing was uploaded and nothing was spent.'}
                     </p>
                   </div>
                 </div>
               )}
 
               {phase === 'running' && run && (
-                <IngestRun run={run} report={report} ceiling={ceiling} />
+                <IngestRun run={run} report={quote} ceiling={ceiling} />
               )}
             </motion.div>
           </AnimatePresence>
@@ -702,15 +1032,64 @@ export default function UploadDialog({
             <>
               <p className="min-w-0 flex-1 text-[12.5px] leading-relaxed text-paper-mute">
                 {phase === 'quote'
-                  ? 'Nothing has been spent yet.'
+                  ? existing
+                    ? existing.changed
+                      ? 'Re-indexing brings in the current version of the page.'
+                      : `Indexing it again costs ${(quote?.embedding.api_calls_needed ?? 0).toLocaleString()} API calls — and leaves two copies behind.`
+                    : 'Nothing has been spent yet.'
                   : phase === 'analysing'
-                    ? 'Reading locally. No API calls.'
+                    ? mode === 'url'
+                      ? 'Fetching the page. No API calls.'
+                      : 'Reading locally. No API calls.'
                     : running
                       ? 'Cancelling removes the partial document.'
                       : ''}
               </p>
 
-              {phase === 'quote' && (
+              {/* ── The quote ─────────────────────────────────────────────
+                  When the page is already in the corpus, the safe action is
+                  the loud one: indexing a second copy is free, and free is
+                  exactly what makes it easy to do by accident. The one
+                  exception is a page that has changed — then the new version
+                  is the thing worth having, so Re-index takes the fill. */}
+              {phase === 'quote' && existing && !existing.changed && (
+                <>
+                  <button
+                    type="button"
+                    onClick={commit}
+                    className="btn shrink-0 px-3.5 py-2 text-[13px]"
+                  >
+                    Index it anyway
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onUseExisting?.(existing.document_id);
+                      close();
+                    }}
+                    className="btn-solid shrink-0"
+                  >
+                    Use the existing one
+                  </button>
+                </>
+              )}
+
+              {phase === 'quote' && existing && existing.changed && (
+                <>
+                  <button
+                    type="button"
+                    onClick={close}
+                    className="btn shrink-0 px-3.5 py-2 text-[13px]"
+                  >
+                    Cancel
+                  </button>
+                  <button type="button" onClick={commit} className="btn-solid shrink-0">
+                    Re-index
+                  </button>
+                </>
+              )}
+
+              {phase === 'quote' && !existing && (
                 <>
                   <button
                     type="button"
@@ -735,12 +1114,29 @@ export default function UploadDialog({
                     Close
                   </button>
                   <button type="button" onClick={startOver} className="btn-solid shrink-0">
-                    Choose another file
+                    {mode === 'url' ? 'Try another link' : 'Choose another file'}
                   </button>
                 </>
               )}
 
-              {(phase === 'choose' || phase === 'analysing') && (
+              {phase === 'choose' && mode === 'url' && (
+                <>
+                  <button
+                    type="button"
+                    onClick={close}
+                    className="btn shrink-0 px-3.5 py-2 text-[13px]"
+                  >
+                    Cancel
+                  </button>
+                  {/* Not a commit — it fetches the page and quotes it. The fill
+                      is earned by being the only way forward on this screen. */}
+                  <button type="button" onClick={submitLink} className="btn-solid shrink-0">
+                    Check the link
+                  </button>
+                </>
+              )}
+
+              {((phase === 'choose' && mode === 'file') || phase === 'analysing') && (
                 <button
                   type="button"
                   onClick={close}

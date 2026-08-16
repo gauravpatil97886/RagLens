@@ -13,6 +13,7 @@ import type {
   Preflight,
   Stats,
   StreamEvent,
+  UrlPreflight,
 } from './types';
 
 /** Every path is relative — Vite proxies /api to :8000. */
@@ -106,6 +107,25 @@ export function preflightDocument(file: File, signal?: AbortSignal): Promise<Pre
   form.append('file', file);
   // No Content-Type header — the browser must set the multipart boundary itself.
   return getJson<Preflight>('/documents/preflight', { method: 'POST', body: form, signal });
+}
+
+/**
+ * Fetch and scrape a web page, and quote what indexing it would cost.
+ *
+ * The link half of `preflightDocument`, and it makes the same promise: zero
+ * model calls, nothing written. It does hit the site once — which is the whole
+ * point, since the reader is being shown the article that was found — and the
+ * page body is held server-side for five minutes, so pressing Index afterwards
+ * does not download it again. A `400` here is one of the contract's plain
+ * English refusals: a dead domain, a PDF, a page that is mostly JavaScript.
+ */
+export function preflightUrl(url: string, signal?: AbortSignal): Promise<UrlPreflight> {
+  return getJson<UrlPreflight>('/documents/url/preflight', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+    signal,
+  });
 }
 
 export async function deleteDocument(id: number, signal?: AbortSignal): Promise<void> {
@@ -274,4 +294,24 @@ export function streamUpload(
   form.append('file', file);
   // No Content-Type header — the browser must set the multipart boundary itself.
   return streamPost<IngestEvent>('/documents/stream', { body: form, signal }, onEvent);
+}
+
+/**
+ * Index a web page and watch it happen.
+ *
+ * The same frames as `streamUpload` with three in front — resolving, fetching,
+ * fetched — and one `article` frame after extraction. The fetched frame's
+ * `from_cache` says whether the preflight's copy of the page was reused, so the
+ * run can tell the reader the site was not hit a second time.
+ */
+export function streamUrlIngest(
+  url: string,
+  onEvent: (event: IngestEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  return streamPost<IngestEvent>(
+    '/documents/url/stream',
+    { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }), signal },
+    onEvent,
+  );
 }
